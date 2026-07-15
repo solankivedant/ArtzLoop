@@ -49,9 +49,9 @@ This starts a static file server at the repo root — open `http://localhost:808
 
 Each toy saves to a `.art` file — a renamed `.zip` containing `data.json` (state + parameters) and `preview.png` (a thumbnail). Load a `.art` file via each toy's Load button or by dragging it onto the canvas.
 
-## Deployment
+## CI
 
-Pushing to `main` on GitHub deploys the whole repo to GitHub Pages via [.github/workflows/deploy.yml](.github/workflows/deploy.yml) (enable it once under repo Settings → Pages → Source → GitHub Actions). A separate [CI check](.github/workflows/ci.yml) verifies the launcher grid in `index.html` stays in sync with the folders in `apps/`.
+A [CI check](.github/workflows/ci.yml) verifies the launcher grid in `index.html` stays in sync with the folders in `apps/` on every push and pull request.
 
 ## Contributing / building a new toy
 
