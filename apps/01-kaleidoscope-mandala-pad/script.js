@@ -1,6 +1,6 @@
 
 "use strict";
-/* shared math helpers available to every toy */
+/* shared math helpers available to every tool */
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 function makeNoise2D(seed){
   const rnd=mulberry32(seed),p=new Uint8Array(512),base=[];
@@ -568,7 +568,7 @@ function rotateSelectionCommit(){
   redraw(); // one full redraw, fills included, now that dragging has stopped
   api.dirty();
 }
-window.TOY = {
+window.TOOL = {
   id:"kaleido", file:"mandala.art",
   params:[
     { k:"tool", t:"icons", l:"", v:"brush", opts:[
@@ -716,14 +716,14 @@ window.TOY = {
 };
 })();
 
-/* ArtzLoop core runtime - canonical copy lives in shared/toy-core.js.
+/* ArtzLoop core runtime - canonical copy lives in shared/tool-core.js.
  * Owns: floating tool panel, camera (pan/zoom over an auto-growing "infinite"
  * world canvas), black/white background, undo/redo history, download/upload
- * (.art), localStorage autosave + resume, generative music, toy-grid popup.
- * The toy supplies window.TOY (id, file, params, init, pointer, frame,
+ * (.art), localStorage autosave + resume, generative music, tool-grid popup.
+ * The tool supplies window.TOOL (id, file, params, init, pointer, frame,
  * overlay, clear, serialize, restore, onParam, bgChanged, pixelated). */
 (function(){
-const T = window.TOY;
+const T = window.TOOL;
 const $ = id => document.getElementById(id);
 const APP_VERSION = "2.2.0";
 const KEY_AUTO = "artzloop." + T.id + ".autosave";
@@ -823,18 +823,18 @@ window.addEventListener("keydown", e => {
 
 /* ---- parameter controls --------------------------------------------- */
 const PV = {}, setters = {};
-let onToolSwitch = null; // no-op here - this toy manages its own eraser cursor via overlay(), not screen.style.cursor
+let onToolSwitch = null; // no-op here - this tool manages its own eraser cursor via overlay(), not screen.style.cursor
 // Every param renders inline in the sidebar EXCEPT ones tagged with a
 // `tool:"<key>"` field matching one of the tool-switcher's own option keys -
 // those live in a small popup that opens off that specific tool icon (e.g.
 // Symmetry + Brush size behind the Brush icon, Erase mode + Eraser size
-// behind the Eraser icon), the same pattern a toy would hand-roll itself,
+// behind the Eraser icon), the same pattern a tool would hand-roll itself,
 // just declarative. Untagged controls (Mirror, ...) stay visible in the
 // sidebar by default - there's no generic catch-all settings dump.
 function buildControls(){
   const host = $("controls");
   // every param's value goes live in PV immediately, even ones whose DOM
-  // control is built lazily inside a tool popup - a param a toy reads every
+  // control is built lazily inside a tool popup - a param a tool reads every
   // frame (brush size, symmetry, ...) must never be undefined just because
   // nobody has opened that tool's popup yet. Only the DOM element itself is
   // deferred; the value always exists.
@@ -849,7 +849,7 @@ function buildControls(){
   if (toolParam) buildToolIcons(host, toolParam, byTool);
   // color comes right after the tool icons, then every remaining untagged
   // control (Mirror, Rainbow, ...) in its declared order - a fixed reading
-  // order every toy shares: tools, color, on/off extras.
+  // order every tool shares: tools, color, on/off extras.
   for (const p of T.params) if (p.t === "color") buildOneControl(host, p);
   for (const p of T.params){
     if (p === toolParam || p.t === "color") continue;
@@ -861,7 +861,7 @@ function buildControls(){
 // shared floating panel that opens off the icon. Clicking a tool icon both
 // switches the active tool (as always) and opens/updates that popup;
 // clicking the already-open tool's icon again closes it - same toggle
-// behavior a hand-wired per-toy popup would have.
+// behavior a hand-wired per-tool popup would have.
 function buildToolIcons(host, p, byTool){
   PV[p.k] = p.v;
   const lab = document.createElement("label"); lab.className = "ctl"; lab.dataset.key = p.k;
@@ -1010,7 +1010,7 @@ function applyParams(vals){
  * whole flow on-brand) */
 const PAL_COLORS = ["#000000","#7f7f7f","#880015","#ed1c24","#ff7f27","#fff200","#22b14c","#00a2e8",
   "#3f48cc","#a349a4","#ffffff","#c3c3c3","#b97a57","#ffaec9","#ffc90e","#efe4b0"];
-const PAL_BRAND = ["#5ee6ff","#6d7cff","#3fd8d0","#f4c542"]; // ArtzLoop accents, incl. this toy's default
+const PAL_BRAND = ["#5ee6ff","#6d7cff","#3fd8d0","#f4c542"]; // ArtzLoop accents, incl. this tool's default
 function hsv2rgb(h, s, v){
   const c = v*s, x = c*(1 - Math.abs((h/60)%2 - 1)), m = v - c;
   let r, g, b;
@@ -1178,16 +1178,16 @@ window.addEventListener("pointerdown", e => {
     palette.classList.remove("show");
 });
 
-/* ---- api handed to the toy ------------------------------------------ */
+/* ---- api handed to the tool ------------------------------------------ */
 const api = {
   get W(){ return W; }, get H(){ return H; },
   get ctx(){ return wctx; }, get world(){ return world; },
   get selectMode(){ return selectMode; }, // true while the runtime's own drag-select is active
-  get zoom(){ return zoom; }, // lets a toy keep an overlay's on-screen stroke width constant across zoom levels
+  get zoom(){ return zoom; }, // lets a tool keep an overlay's on-screen stroke width constant across zoom levels
   P: PV,
   bg: () => bgMode,
   ink: () => bgMode === "dark" ? "#eceaf6" : "#20202c",
-  grow(x, y){ ensureVisible(x, y); }, // let toys extend the world beyond the pointer
+  grow(x, y){ ensureVisible(x, y); }, // let tools extend the world beyond the pointer
   dirty(){ dirtyFlag = true; scheduleSnapshot(); },
   clearWorld(){
     wctx.save(); wctx.setTransform(1,0,0,1,0,0);
@@ -1211,7 +1211,7 @@ function viewSize(){
 // (only the pan offset shifts it); purely a framing aid, never saved/exported.
 function drawGrid(v){
   if (!gridOn) return;
-  const cell = 44; // matches the shared framing-grid constant used by every other toy
+  const cell = 44; // matches the shared framing-grid constant used by every other tool
   sctx.strokeStyle = bgMode === "dark" ? "rgba(255,255,255,.06)" : "rgba(20,20,44,.075)";
   sctx.lineWidth = 1;
   sctx.beginPath();
@@ -1501,7 +1501,7 @@ window.addEventListener("resize", () => {
   }
 });
 
-/* ---- pointer input: pan vs toy ------------------------------------------ */
+/* ---- pointer input: pan vs tool ------------------------------------------ */
 let panMode = false, spaceHeld = false, panning = null;
 // select mode has no drag step - toggling it on/off just selects/deselects
 // the whole piece of art in one shot (dragging a marquee and hit-testing
@@ -1612,7 +1612,7 @@ function positionSelectUI(){
 }
 selDeleteBtn.onclick = () => { if (T.deleteSelection) T.deleteSelection(); };
 // rotation always pivots on the mandala's own center (W/2,H/2 in world
-// coords, same point the toy treats as its origin) - not the selection's own
+// coords, same point the tool treats as its origin) - not the selection's own
 // bbox center - so the drag gesture directly mirrors what actually spins.
 // The readout always shows the ART'S ABSOLUTE angle (persisted rotation +
 // any live in-progress drag delta), never a delta that resets to 0 - so
@@ -1744,7 +1744,7 @@ async function doUpload(file){
     const entry = zip.file("data.json");
     if (!entry) throw new Error("Not an ArtzLoop file (missing data.json).");
     const data = JSON.parse(await entry.async("string"));
-    if (data.app !== T.id) throw new Error('This file was saved by "' + data.app + '", not this toy.');
+    if (data.app !== T.id) throw new Error('This file was saved by "' + data.app + '", not this tool.');
     applySession(data);
     dirtyFlag = true;
   } catch (err){
@@ -1803,9 +1803,9 @@ $("clearBtn").onclick = () => {
   scheduleSnapshot();
 };
 
-/* ---- toy-grid popup ------------------------------------------------------ */
+/* ---- tool-grid popup ------------------------------------------------------ */
 const modal = $("modal");
-$("toysBtn").onclick = () => modal.classList.add("show");
+$("toolsBtn").onclick = () => modal.classList.add("show");
 $("modalX").onclick = () => modal.classList.remove("show");
 modal.addEventListener("click", e => { if (e.target === modal) modal.classList.remove("show"); });
 

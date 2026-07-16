@@ -1,4 +1,4 @@
-# 13 generative art / drawing toys
+# 13 generative art / drawing tools
 
 Same family as the kaleidoscope pad above: single-page browser apps, no backend, no login. Each one saves your session to a small downloadable file with its own extension, and you can re-upload that file later to pick up exactly where you left off.
 
@@ -20,7 +20,7 @@ Same family as the kaleidoscope pad above: single-page browser apps, no backend,
 
 - **Why a zip instead of raw JSON:** bundling the thumbnail alongside the data means you can build a simple "gallery" screen later that shows previews of saved files without having to reopen and re-render each one.
 - **Why Tone.js instead of an mp3:** generating the ambient pad in-browser means the whole app stays a single file with zero licensing risk - no need to source or clear a music track.
-- **One extension or many:** using one shared extension (e.g. `.art`) across all 20 toys is simpler if you want a single "gallery" app that opens files from any of them; a unique extension per toy is friendlier if you're selling them as separate products.
+- **One extension or many:** using one shared extension (e.g. `.art`) across all 20 tools is simpler if you want a single "gallery" app that opens files from any of them; a unique extension per tool is friendlier if you're selling them as separate products.
 
 
 

@@ -1,6 +1,6 @@
 
 "use strict";
-/* shared math helpers available to every toy */
+/* shared math helpers available to every tool */
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 function makeNoise2D(seed){
   const rnd=mulberry32(seed),p=new Uint8Array(512),base=[];
@@ -86,7 +86,7 @@ function redraw(){
 const LINE_ICON = '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 19 19 5"/><circle cx="5" cy="19" r="1.6" fill="currentColor"/><circle cx="19" cy="5" r="1.6" fill="currentColor"/></svg>';
 const CIRC_ICON = '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/></svg>';
 const DRAW_ICON = '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
-window.TOY = {
+window.TOOL = {
   id:"sacredgeo", file:"sacredgeo.art",
   params:[
     { k:"tool", t:"icons", l:"", v:"line", opts:[
@@ -162,14 +162,14 @@ window.TOY = {
 };
 })();
 
-/* ArtzLoop core runtime - canonical copy lives in shared/toy-core.js.
+/* ArtzLoop core runtime - canonical copy lives in shared/tool-core.js.
  * Owns: floating tool panel, camera (pan/zoom over an auto-growing "infinite"
  * world canvas), black/white background, undo/redo history, download/upload
- * (.art), localStorage autosave + resume, generative music, toy-grid popup.
- * The toy supplies window.TOY (id, file, params, init, pointer, frame,
+ * (.art), localStorage autosave + resume, generative music, tool-grid popup.
+ * The tool supplies window.TOOL (id, file, params, init, pointer, frame,
  * overlay, clear, serialize, restore, onParam, bgChanged, pixelated). */
 (function(){
-const T = window.TOY;
+const T = window.TOOL;
 const $ = id => document.getElementById(id);
 const APP_VERSION = "2.3.0";
 const KEY_AUTO = "artzloop." + T.id + ".autosave";
@@ -274,14 +274,14 @@ let onToolSwitch = null; // set once the eraser section (below) exists, so switc
 // Every param renders inline in the sidebar EXCEPT ones tagged with a
 // `tool:"<key>"` field matching one of the tool-switcher's own option keys -
 // those live in a small popup that opens off that specific tool icon (e.g.
-// Width + Axes behind the Draw icon), the same pattern a toy would
+// Width + Axes behind the Draw icon), the same pattern a tool would
 // hand-roll itself, just declarative. Untagged controls (Color, Mirror,
 // Snap, Guide, ...) stay visible in the sidebar by default - there's no
 // generic catch-all settings dump.
 function buildControls(){
   const host = $("controls");
   // every param's value goes live in PV immediately, even ones whose DOM
-  // control is built lazily inside a tool popup - a param a toy reads every
+  // control is built lazily inside a tool popup - a param a tool reads every
   // frame (brush size, symmetry, ...) must never be undefined just because
   // nobody has opened that tool's popup yet. Only the DOM element itself is
   // deferred; the value always exists.
@@ -296,7 +296,7 @@ function buildControls(){
   if (toolParam) buildToolIcons(host, toolParam, byTool);
   // color comes right after the tool icons, then every remaining untagged
   // control (Mirror, Snap, Guide, ...) in its declared order - a fixed
-  // reading order every toy shares: tools, color, on/off extras.
+  // reading order every tool shares: tools, color, on/off extras.
   for (const p of T.params) if (p.t === "color") buildOneControl(host, p);
   for (const p of T.params){
     if (p === toolParam || p.t === "color") continue;
@@ -456,7 +456,7 @@ function applyParams(vals){
  * whole flow on-brand) */
 const PAL_COLORS = ["#000000","#7f7f7f","#880015","#ed1c24","#ff7f27","#fff200","#22b14c","#00a2e8",
   "#3f48cc","#a349a4","#ffffff","#c3c3c3","#b97a57","#ffaec9","#ffc90e","#efe4b0"];
-const PAL_BRAND = ["#5ee6ff","#6d7cff","#3fd8d0","#f4c542"]; // ArtzLoop accents, incl. this toy's default
+const PAL_BRAND = ["#5ee6ff","#6d7cff","#3fd8d0","#f4c542"]; // ArtzLoop accents, incl. this tool's default
 function hsv2rgb(h, s, v){
   const c = v*s, x = c*(1 - Math.abs((h/60)%2 - 1)), m = v - c;
   let r, g, b;
@@ -624,16 +624,16 @@ window.addEventListener("pointerdown", e => {
     palette.classList.remove("show");
 });
 
-/* ---- api handed to the toy ------------------------------------------ */
+/* ---- api handed to the tool ------------------------------------------ */
 const api = {
   get W(){ return W; }, get H(){ return H; },
   get ctx(){ return wctx; }, get world(){ return world; },
   get selectMode(){ return selectMode; }, // true while the runtime's own drag-select is active
-  get zoom(){ return zoom; }, // lets a toy keep an overlay's on-screen stroke width constant across zoom levels
+  get zoom(){ return zoom; }, // lets a tool keep an overlay's on-screen stroke width constant across zoom levels
   P: PV,
   bg: () => bgMode,
   ink: () => bgMode === "dark" ? "#eceaf6" : "#20202c",
-  grow(x, y){ ensureVisible(x, y); }, // let toys extend the world beyond the pointer
+  grow(x, y){ ensureVisible(x, y); }, // let tools extend the world beyond the pointer
   dirty(){ dirtyFlag = true; scheduleSnapshot(); },
   clearWorld(){
     wctx.save(); wctx.setTransform(1,0,0,1,0,0);
@@ -965,7 +965,7 @@ window.addEventListener("resize", () => {
   }
 });
 
-/* ---- pointer input: pan vs toy ------------------------------------------ */
+/* ---- pointer input: pan vs tool ------------------------------------------ */
 let panMode = false, spaceHeld = false, panning = null;
 const panBtn = $("panBtn");
 panBtn.onclick = () => {
@@ -1049,15 +1049,15 @@ screen.addEventListener("pointerup", endPtr);
 screen.addEventListener("pointercancel", endPtr);
 
 /* ---- select-all + rotate/delete -----------------------------------------
- * Uses the toy's own precise per-object hooks (T.selectAll/getSelectionBBox/
+ * Uses the tool's own precise per-object hooks (T.selectAll/getSelectionBBox/
  * deleteSelection/rotateSelectionStart/Preview/Commit[/getGlobalRot]) when it
- * provides them - e.g. a toy with discrete vector strokes can rotate each
- * object individually. Any toy that doesn't provide those hooks gets a
+ * provides them - e.g. a tool with discrete vector strokes can rotate each
+ * object individually. Any tool that doesn't provide those hooks gets a
  * generic whole-canvas raster fallback instead: "select" grabs everything
  * currently drawn (via contentBBox), "rotate" spins a snapshot of those
  * pixels as one rigid image and bakes it back in on release, "delete" clears
  * the canvas. This makes the bottom-bar Select tool work the same way in
- * every toy regardless of its internal data model. This toy has no #selectBtn
+ * every tool regardless of its internal data model. This tool has no #selectBtn
  * in its markup, so this whole section stays dormant (every hook below is
  * gated on the element existing). */
 const selectBtn = $("selectBtn"), selDeleteBtn = $("selDelete"), selRotateBtn = $("selRotate"), rotDeg = $("rotDeg");
@@ -1198,15 +1198,15 @@ if (selectBtn){
 
 /* ---- generic raster eraser ----------------------------------------------
  * Eraser is a sidebar tool icon like any other (not a separate bottom-bar
- * toggle) - a toy declares an "eraser" option on its own "tool" icons param,
- * same as it would for "brush". If the toy handles that value itself inside
+ * toggle) - a tool declares an "eraser" option on its own "tool" icons param,
+ * same as it would for "brush". If the tool handles that value itself inside
  * T.pointer(), it sets T.customEraser = true to opt out; otherwise this
  * erases pixels straight out of the world canvas whenever that tool is
- * active, so any toy gets a working eraser with zero extra per-toy code.
- * The eraser's radius uses the toy's own "esize" param when it declares one
+ * active, so any tool gets a working eraser with zero extra per-tool code.
+ * The eraser's radius uses the tool's own "esize" param when it declares one
  * (grouped in the Eraser icon's popup, same as a hand-built one would be);
  * otherwise it falls back to a shared size, adjustable with the scroll
- * wheel while the tool is active. This toy has no "eraser" tool option, so
+ * wheel while the tool is active. This tool has no "eraser" tool option, so
  * eraserActive() always reports false and this section stays dormant. */
 let erasing = false, eraserCursor = null;
 let eraserSize = +localStorage.getItem(KEY_ERASER) || 28;
@@ -1350,7 +1350,7 @@ async function doUpload(file){
     const entry = zip.file("data.json");
     if (!entry) throw new Error("Not an ArtzLoop file (missing data.json).");
     const data = JSON.parse(await entry.async("string"));
-    if (data.app !== T.id) throw new Error('This file was saved by "' + data.app + '", not this toy.');
+    if (data.app !== T.id) throw new Error('This file was saved by "' + data.app + '", not this tool.');
     applySession(data);
     dirtyFlag = true;
   } catch (err){
@@ -1409,9 +1409,9 @@ $("clearBtn").onclick = () => {
   scheduleSnapshot();
 };
 
-/* ---- toy-grid popup ------------------------------------------------------ */
+/* ---- tool-grid popup ------------------------------------------------------ */
 const modal = $("modal");
-$("toysBtn").onclick = () => modal.classList.add("show");
+$("toolsBtn").onclick = () => modal.classList.add("show");
 $("modalX").onclick = () => modal.classList.remove("show");
 modal.addEventListener("click", e => { if (e.target === modal) modal.classList.remove("show"); });
 

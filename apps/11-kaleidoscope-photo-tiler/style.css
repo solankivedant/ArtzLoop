@@ -187,10 +187,10 @@ select:hover{border-color:rgba(255,255,255,.24)}
 [data-tip]:hover::before{content:"";position:absolute;top:calc(100% + 5px);left:50%;
   transform:translateX(-50%) rotate(45deg);width:8px;height:8px;background:#1d1d2e;
   border-left:1px solid rgba(255,255,255,.14);border-top:1px solid rgba(255,255,255,.14);z-index:61;pointer-events:none}
-/* the leftmost (toys) and rightmost (help) header icons sit flush against
+/* the leftmost (tools) and rightmost (help) header icons sit flush against
    the viewport edge - a centered tooltip would spill off-screen there */
-#toysBtn[data-tip]:hover::after{left:0;transform:none}
-#toysBtn[data-tip]:hover::before{left:16px;transform:rotate(45deg)}
+#toolsBtn[data-tip]:hover::after{left:0;transform:none}
+#toolsBtn[data-tip]:hover::before{left:16px;transform:rotate(45deg)}
 #helpBtn[data-tip]:hover::after{left:auto;right:0;transform:none}
 #helpBtn[data-tip]:hover::before{left:auto;right:16px;transform:rotate(45deg)}
 
@@ -249,7 +249,7 @@ select:hover{border-color:rgba(255,255,255,.24)}
 .cbody p{font-size:11px;color:var(--tx2)}
 
 /* help modal - a deliberately light/white sheet so it reads like a document,
-   distinct from the toy-grid popup */
+   distinct from the tool-grid popup */
 .sheet.helpSheet{width:min(640px,93vw);background:#fbfbfd;border-color:rgba(20,20,44,.12);
   box-shadow:0 24px 70px rgba(0,0,0,.45)}
 .helpSheet h2{color:#16161f}

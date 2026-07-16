@@ -5,8 +5,8 @@
  *   data.json    - { appVersion, app, createdAt, canvasWidth, canvasHeight, state, params }
  *   preview.png  - thumbnail of the canvas at save time
  *
- * Single-file toys inline a copy of these functions (marked "copied from
- * shared/artz-format.js"); Vite-based toys import this module directly.
+ * Single-file tools inline a copy of these functions (marked "copied from
+ * shared/artz-format.js"); Vite-based tools import this module directly.
  * Requires JSZip (CDN) to be loaded globally.
  */
 
@@ -17,7 +17,7 @@ const ARTZ_VERSION = "1.0.0";
  * @param {object} opts
  * @param {string} opts.app        short app id, e.g. "kaleido"
  * @param {HTMLCanvasElement} opts.canvas  source for the preview thumbnail
- * @param {object} opts.state      toy-specific state (strokes, cells, ...)
+ * @param {object} opts.state      tool-specific state (strokes, cells, ...)
  * @param {object} opts.params     current UI parameter values
  * @param {string} opts.filename   download name, e.g. "mandala.art"
  */
@@ -48,7 +48,7 @@ async function saveArtz({ app, canvas, state, params, filename }) {
 /**
  * Read an .art File back into { data, previewDataUrl }.
  * Throws if the file isn't a valid .art container for `app`
- * (pass app: null to accept any toy's file, e.g. in the gallery).
+ * (pass app: null to accept any tool's file, e.g. in the gallery).
  */
 async function loadArtz(file, { app = null } = {}) {
   if (typeof JSZip === "undefined") {
@@ -59,7 +59,7 @@ async function loadArtz(file, { app = null } = {}) {
   if (!entry) throw new Error("Not an ArtzLoop file (missing data.json).");
   const data = JSON.parse(await entry.async("string"));
   if (app && data.app !== app) {
-    throw new Error(`This file was saved by "${data.app}", not this toy.`);
+    throw new Error(`This file was saved by "${data.app}", not this tool.`);
   }
   const major = String(data.appVersion || "0").split(".")[0];
   if (major !== ARTZ_VERSION.split(".")[0]) {

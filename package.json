@@ -2,7 +2,7 @@
   "name": "artzloop",
   "version": "1.0.0",
   "private": true,
-  "description": "A collection of offline-capable generative art / drawing toys for the browser.",
+  "description": "A collection of offline-capable generative art / drawing tools for the browser.",
   "scripts": {
     "dev": "npx --yes serve -l 8080 .",
     "lint:html": "npx --yes html-validate \"index.html\" \"apps/*/index.html\""

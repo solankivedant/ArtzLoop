@@ -5,11 +5,11 @@
  * low-pass filter and reverb, mixed at -18dB. Started on first user gesture
  * (browser autoplay rules); mute preference persists in localStorage.
  *
- * Single-file toys inline a copy (marked "copied from shared/ambient-pad.js");
- * Vite-based toys import this module. Requires Tone.js (CDN) globally.
+ * Single-file tools inline a copy (marked "copied from shared/ambient-pad.js");
+ * Vite-based tools import this module. Requires Tone.js (CDN) globally.
  */
 
-const AMBIENT_MUTE_KEY = "artzloop.muted"; // shared across all toys
+const AMBIENT_MUTE_KEY = "artzloop.muted"; // shared across all tools
 
 function createAmbientPad() {
   let started = false;

@@ -1,5 +1,5 @@
 // Verifies the root launcher grid and every apps/ folder stay in sync:
-// every toy folder has a card, and every card links to a folder that exists.
+// every tool folder has a card, and every card links to a folder that exists.
 const fs = require("fs");
 const path = require("path");
 
@@ -23,14 +23,14 @@ const missingFromDisk = [...linkedFolders].filter(f => !actualFolders.has(f));
 let ok = true;
 if (missingFromGrid.length) {
   ok = false;
-  console.error("Toys with no card in index.html:", missingFromGrid.join(", "));
+  console.error("Tools with no card in index.html:", missingFromGrid.join(", "));
 }
 if (missingFromDisk.length) {
   ok = false;
-  console.error("index.html links to missing toy folders:", missingFromDisk.join(", "));
+  console.error("index.html links to missing tool folders:", missingFromDisk.join(", "));
 }
 
 if (!ok) {
   process.exit(1);
 }
-console.log(`OK: ${actualFolders.size} toys, all linked from index.html.`);
+console.log(`OK: ${actualFolders.size} tools, all linked from index.html.`);
