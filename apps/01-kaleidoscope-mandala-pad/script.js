@@ -604,6 +604,7 @@ window.TOOL = {
     { k:"size", t:"range",  l:"Brush",    min:1, max:40, step:1, v:6, u:"px", tool:"brush" },
   ],
   init(a){ api = a; },
+  onParam(k){ if (k === "tool") api.syncCursor(); },
   pointer(type, x, y){
     cursor = [x, y];
     const g = geom(), n = [(x-g.cx)/g.sc, (y-g.cy)/g.sc];
@@ -1232,6 +1233,10 @@ const api = {
     im.onload = () => { wctx.drawImage(im, 0, 0, W, H); if (cb) cb(); };
     im.src = url;
   },
+  // re-derives the cursor from the now-current tool - called whenever the
+  // "tool" param changes, from the tool-specific onParam() below, since
+  // toolCursor()/panMode/screen all live in this closure, not that one.
+  syncCursor(){ screen.style.cursor = (panMode || spaceHeld) ? "grab" : toolCursor(); },
 };
 
 /* ---- camera / blit ----------------------------------------------------- */
@@ -1540,11 +1545,19 @@ let panMode = false, spaceHeld = false, panning = null;
 // every point of every stroke against it, every frame, was the slow part).
 let selectMode = false, rotating = null;
 const panBtn = $("panBtn"), selectBtn = $("selectBtn");
+// eraser/fill/recolor each draw their own cursor glyph in overlay() - the
+// native crosshair would just double up with it, so hide it (cursor:none)
+// for those tools and only fall back to crosshair for brush, which has no
+// glyph of its own.
+function toolCursor(){
+  const t = api.P.tool;
+  return (t === "eraser" || t === "fill" || t === "recolor") ? "none" : "crosshair";
+}
 panBtn.onclick = () => {
   panMode = !panMode;
   panBtn.classList.toggle("active", panMode);
   if (panMode && selectMode){ selectMode = false; selectBtn.classList.remove("active"); if (T.clearSelection) T.clearSelection(); }
-  screen.style.cursor = panMode ? "grab" : "crosshair";
+  screen.style.cursor = panMode ? "grab" : toolCursor();
 };
 selectBtn.onclick = () => {
   selectMode = !selectMode;
@@ -1553,7 +1566,7 @@ selectBtn.onclick = () => {
     if (panMode){ panMode = false; panBtn.classList.remove("active"); }
     if (T.selectAll) T.selectAll();
   } else if (T.clearSelection) T.clearSelection();
-  screen.style.cursor = selectMode ? "crosshair" : ((panMode || spaceHeld) ? "grab" : "crosshair");
+  screen.style.cursor = selectMode ? "crosshair" : ((panMode || spaceHeld) ? "grab" : toolCursor());
 };
 window.addEventListener("keydown", e => {
   if (e.code === "Space" && !spaceHeld && e.target === document.body){
@@ -1565,7 +1578,7 @@ window.addEventListener("keydown", e => {
 window.addEventListener("keyup", e => {
   if (e.code === "Space"){
     spaceHeld = false;
-    if (!panMode) screen.style.cursor = "crosshair";
+    if (!panMode) screen.style.cursor = toolCursor();
   }
 });
 function toWorldXY(clientX, clientY){
@@ -1608,7 +1621,7 @@ screen.addEventListener("pointermove", e => {
 function endPtr(e){
   if (panning){
     panning = null;
-    screen.style.cursor = (panMode || spaceHeld) ? "grab" : "crosshair";
+    screen.style.cursor = (panMode || spaceHeld) ? "grab" : toolCursor();
     return;
   }
   if (selectMode) return;
