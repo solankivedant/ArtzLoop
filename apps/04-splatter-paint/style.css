@@ -250,8 +250,8 @@ select:hover{border-color:rgba(255,255,255,.24)}
 .card:hover{transform:translateY(-3px);border-color:rgba(255,255,255,.25);box-shadow:0 10px 26px rgba(0,0,0,.4)}
 .card[href$="01-kaleidoscope-mandala-pad/index.html"]{border:2px solid #f4c542;box-shadow:0 0 0 1px rgba(244,197,66,.25),0 10px 26px rgba(244,197,66,.18)}
 .card[href$="01-kaleidoscope-mandala-pad/index.html"]:hover{border-color:#ffe08a;box-shadow:0 0 0 1px rgba(244,197,66,.45),0 14px 30px rgba(244,197,66,.3)}
-.card[href$="12-snowflake-generator/index.html"]{border:2px solid #c7d0da;box-shadow:0 0 0 1px rgba(199,208,218,.28),0 10px 26px rgba(199,208,218,.16)}
-.card[href$="12-snowflake-generator/index.html"]:hover{border-color:#e8edf2;box-shadow:0 0 0 1px rgba(199,208,218,.5),0 14px 30px rgba(199,208,218,.28)}
+.card[href$="09-snowflake-generator/index.html"]{border:2px solid #c7d0da;box-shadow:0 0 0 1px rgba(199,208,218,.28),0 10px 26px rgba(199,208,218,.16)}
+.card[href$="09-snowflake-generator/index.html"]:hover{border-color:#e8edf2;box-shadow:0 0 0 1px rgba(199,208,218,.5),0 14px 30px rgba(199,208,218,.28)}
 .card.here{outline:2px solid var(--ac)}
 .card svg{display:block;width:100%;height:auto;background:#0d0d16}
 .cnum{position:absolute;top:7px;left:7px;font:11px Consolas,monospace;background:rgba(0,0,0,.55);

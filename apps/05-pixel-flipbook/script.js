@@ -26,100 +26,151 @@ function hslToRgb(h,s,l){
 }
 function hexToRgb(hex){const n=parseInt(hex.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255];}
 
-/* #04 Ink Marbling - tap to drop ink on water, drag to swirl it.
- * Classic suminagashi math: drops displace older drops radially; a swirl
- * stroke shears points near its path. Switch to the eraser (generic pixel
- * eraser, same as any other tool) to rub out part of the bath. */
+/* #11 Pixel Flipbook - draw on a pixel grid across frames, play them back.
+ * Eraser is hand-rolled (T.customEraser) rather than the generic pixel
+ * eraser: this tool repaints its whole board fresh from `frames` every
+ * frame, so the generic canvas-pixel eraser would get painted right back
+ * over on the next tick - erasing has to clear the grid cell itself. */
 (function(){
-let api, drops = [], downAt = null, moved = false, lastComb = null;
-const VERTS = 100;
-const PALETTE = ["#26547c","#ef476f","#ffd166","#06d6a0","#7b6cf6","#f78c6b"];
-let palIdx = 0;
-
-function addDrop(x, y){
-  const r = api.P.diameter/2;
-  for (const d of drops){
-    const pts = d.pts;
-    for (let i = 0; i < pts.length; i += 2){
-      const dx = pts[i]-x, dy = pts[i+1]-y;
-      const dist = Math.max(.001, Math.hypot(dx, dy));
-      const f = Math.sqrt(1 + (r*r)/(dist*dist));
-      pts[i] = x + dx*f; pts[i+1] = y + dy*f;
-    }
-  }
-  const pts = new Array(VERTS*2);
-  for (let i = 0; i < VERTS; i++){
-    const a = Math.PI*2*i/VERTS;
-    pts[i*2] = x + r*Math.cos(a); pts[i*2+1] = y + r*Math.sin(a);
-  }
-  const col = api.P.auto ? PALETTE[palIdx++ % PALETTE.length] : api.P.col;
-  drops.push({ col, pts });
-  if (drops.length > 220) drops.shift();
+let api, g = 16, frames = [], cur = 0, playT = 0, playFrame = 0, playing = false;
+function blank(){ return new Array(g*g).fill(null); }
+function cellGeom(){
+  const s = Math.min(api.W, api.H)*.86/g;
+  return { s, ox:(api.W - s*g)/2, oy:(api.H - s*g)/2 };
+}
+function setGrid(ng){
+  if (ng === g) return;
+  const old = frames, og = g;
+  g = ng;
+  frames = old.map(f => {
+    const nf = blank();
+    for (let y = 0; y < Math.min(og, g); y++)
+      for (let x = 0; x < Math.min(og, g); x++) nf[y*g+x] = f[y*og+x];
+    return nf;
+  });
+  if (!frames.length) frames = [blank()];
+  cur = Math.min(cur, frames.length-1);
+}
+function nav(d){
+  cur = (cur + d + frames.length)%frames.length;
   api.dirty();
 }
-function comb(x, y){
-  if (!lastComb){ lastComb = [x, y]; return; }
-  const dx = x-lastComb[0], dy = y-lastComb[1];
-  const m = Math.hypot(dx, dy);
-  if (m < 2) return;
-  const ux = dx/m, uy = dy/m;
-  const z = Math.min(m, 14)*(api.P.strength/40);
-  const falloff = 22 + api.P.strength;
-  for (const d of drops){
-    const pts = d.pts;
-    for (let i = 0; i < pts.length; i += 2){
-      // perpendicular distance from the comb point
-      const px = pts[i]-x, py = pts[i+1]-y;
-      const dist = Math.abs(px*uy - py*ux) + Math.abs(px*ux + py*uy)*.35;
-      const f = z*Math.exp(-dist/falloff);
-      pts[i] += ux*f; pts[i+1] += uy*f;
-    }
-  }
-  lastComb = [x, y];
+function addFrame(dup){
+  frames.splice(cur+1, 0, dup ? frames[cur].slice() : blank());
+  cur++;
   api.dirty();
+}
+function delFrame(){
+  if (frames.length <= 1){ frames = [blank()]; }
+  else { frames.splice(cur, 1); cur = Math.min(cur, frames.length-1); }
+  api.dirty();
+}
+const ICON_PLAY = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7 4v16l14-8z"/></svg>';
+const ICON_PAUSE = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+function setPlaying(v){
+  playing = v;
+  const btn = document.getElementById("playBtn");
+  if (!btn) return;
+  btn.classList.toggle("active", playing);
+  btn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+  btn.title = playing ? "Pause" : "Play the animation";
+}
+// the frame-transport buttons live in the bottom bar, not the side panel -
+// wired directly here (rather than as declarative params) since they're
+// plain one-shot actions with no value of their own to track.
+function wireTransport(){
+  const $ = id => document.getElementById(id);
+  $("rewindBtn").onclick = () => { cur = 0; api.dirty(); };
+  $("prevFrameBtn").onclick = () => nav(-1);
+  $("nextFrameBtn").onclick = () => nav(1);
+  $("addFrameBtn").onclick = () => addFrame(false);
+  $("dupFrameBtn").onclick = () => addFrame(true);
+  $("delFrameBtn").onclick = delFrame;
+  $("playBtn").onclick = () => setPlaying(!playing);
+  setPlaying(false);
 }
 window.TOOL = {
-  id:"marble", file:"marbling.art",
+  id:"flipbook", file:"flipbook.art",
+  customEraser: true, // this tool erases by clearing a grid cell, not canvas pixels - see header comment
   params:[
     { k:"tool", t:"icons", l:"", v:"brush", opts:[
-      ["brush", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>', "Ink"],
+      ["brush", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>', "Brush"],
       ["eraser", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>', "Eraser"],
+      ["frame", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><circle cx="9" cy="6" r="2" fill="currentColor" stroke="none"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="15" cy="12" r="2" fill="currentColor" stroke="none"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="7" cy="18" r="2" fill="currentColor" stroke="none"/></svg>', "Frame settings"],
     ]},
-    { k:"diameter", t:"range", l:"Diameter", min:10, max:80, step:1, v:38, u:"px", tool:"brush" },
-    { k:"strength", t:"range", l:"Swirl",    min:10, max:80, step:1, v:40, tool:"brush" },
-    { k:"esize", t:"range", l:"Eraser", min:10, max:200, step:1, v:60, u:"px", tool:"eraser" },
-    { k:"col",  t:"color",  l:"Ink",  v:"#ef476f" },
-    { k:"auto", t:"toggle", l:"Auto palette", v:true },
+    { k:"grid", t:"select", l:"Grid", v:"16", opts:[["8","8×8"],["16","16×16"],["24","24×24"],["32","32×32"],["custom","Custom"]], tool:"frame" },
+    { k:"gridCustom", t:"range", l:"Custom size", min:2, max:64, step:1, v:16, desc:"Only applies while Grid above is set to Custom", tool:"frame" },
+    { k:"fps", t:"range", l:"Speed", min:2, max:24, step:1, v:8, u:"fps", tool:"frame" },
+    { k:"col", t:"color", l:"Pixel", v:"#ffb454" },
+    { k:"onion", t:"toggle", l:"Previous frame", v:true },
   ],
-  init(a){ api = a; },
+  init(a){ api = a; frames = [blank()]; wireTransport(); },
+  onParam(k, v){
+    if (k === "grid") setGrid(v === "custom" ? api.P.gridCustom : +v);
+    else if (k === "gridCustom" && api.P.grid === "custom") setGrid(v);
+  },
   pointer(type, x, y){
-    if (type === "down"){ downAt = [x, y]; moved = false; lastComb = null; }
-    else if (type === "move" && downAt){
-      if (!moved && Math.hypot(x-downAt[0], y-downAt[1]) > 7) moved = true;
-      if (moved) comb(x, y);
-    } else if (type === "up" && downAt){
-      if (!moved) addDrop(downAt[0], downAt[1]);
-      downAt = null; lastComb = null;
-    }
+    if (playing) return;
+    if (type === "down") this._dn = true;
+    if (type === "up"){ this._dn = false; return; }
+    if (!this._dn) return;
+    const { s, ox, oy } = cellGeom();
+    const cx = Math.floor((x-ox)/s), cy = Math.floor((y-oy)/s);
+    if (cx < 0 || cy < 0 || cx >= g || cy >= g) return;
+    frames[cur][cy*g+cx] = api.P.tool === "eraser" ? null : api.P.col;
+    api.dirty();
   },
-  frame(){
-    // full re-render: the whole bath deforms every interaction
-    api.clearWorld();
+  frame(dt){
+    if (playing){
+      playT += dt;
+      if (playT > 1/api.P.fps){ playT = 0; playFrame = (playFrame+1)%frames.length; }
+    } else playFrame = cur;
+    const { s, ox, oy } = cellGeom();
     const c = api.ctx;
-    for (const d of drops){
-      c.fillStyle = d.col;
-      c.beginPath();
-      c.moveTo(d.pts[0], d.pts[1]);
-      for (let i = 2; i < d.pts.length; i += 2) c.lineTo(d.pts[i], d.pts[i+1]);
-      c.closePath(); c.fill();
+    api.clearWorld();
+    // board
+    c.fillStyle = api.bg() === "dark" ? "rgba(255,255,255,.045)" : "rgba(0,0,0,.05)";
+    c.fillRect(ox, oy, s*g, s*g);
+    // ghost (onion skin) of the previous frame while editing
+    if (!playing && api.P.onion && frames.length > 1){
+      const pf = frames[(cur-1+frames.length)%frames.length];
+      c.globalAlpha = .22;
+      drawFrame(c, pf, s, ox, oy);
+      c.globalAlpha = 1;
     }
+    drawFrame(c, frames[playFrame], s, ox, oy);
+    // grid lines
+    c.strokeStyle = api.bg() === "dark" ? "rgba(255,255,255,.07)" : "rgba(0,0,0,.08)";
+    c.lineWidth = 1;
+    for (let i = 0; i <= g; i++){
+      c.beginPath(); c.moveTo(ox+i*s, oy); c.lineTo(ox+i*s, oy+g*s); c.stroke();
+      c.beginPath(); c.moveTo(ox, oy+i*s); c.lineTo(ox+g*s, oy+i*s); c.stroke();
+    }
+    // frame counter
+    c.fillStyle = api.bg() === "dark" ? "rgba(230,230,245,.75)" : "rgba(30,30,44,.75)";
+    c.font = "12px Consolas,monospace";
+    c.fillText("frame " + (playFrame+1) + "/" + frames.length + (playing ? " ▶" : ""), ox, oy-8);
   },
-  clear(){ drops = []; api.clearWorld(); },
-  serialize(){
-    return { drops: drops.map(d => ({ col:d.col, pts:d.pts.map(v => Math.round(v*10)/10) })) };
+  clear(){ frames[cur] = blank(); },
+  serialize(){ return { g, cur, frames }; },
+  restore(s){
+    if (!s || !s.frames) return;
+    g = s.g || 16;
+    frames = s.frames.map(f => f.slice());
+    cur = Math.min(s.cur || 0, frames.length-1);
+    playFrame = cur;
+    setPlaying(false);
   },
-  restore(s){ drops = (s && s.drops) || []; },
 };
+function drawFrame(c, f, s, ox, oy){
+  for (let y = 0; y < g; y++)
+    for (let x = 0; x < g; x++){
+      const col = f[y*g+x];
+      if (!col) continue;
+      c.fillStyle = col;
+      c.fillRect(ox+x*s, oy+y*s, s, s);
+    }
+}
 })();
 
 /* ArtzLoop core runtime - canonical copy lives in shared/tool-core.js.
@@ -234,10 +285,10 @@ let onToolSwitch = null; // set once the eraser section (below) exists, so switc
 // Every param renders inline in the sidebar EXCEPT ones tagged with a
 // `tool:"<key>"` field matching one of the tool-switcher's own option keys -
 // those live in a small popup that opens off that specific tool icon (e.g.
-// Diameter + Swirl behind the Ink icon, Eraser size behind the Eraser icon),
-// the same pattern a tool would hand-roll itself, just declarative. Untagged
-// controls (Ink color, Auto palette, ...) stay visible in the sidebar by
-// default - there's no generic catch-all settings dump.
+// Grid + Speed behind the Frame-settings icon), the same pattern a tool would
+// hand-roll itself, just declarative. Untagged controls (Pixel color, Ghost,
+// ...) stay visible in the sidebar by default - there's no generic
+// catch-all settings dump.
 function buildControls(){
   const host = $("controls");
   // every param's value goes live in PV immediately, even ones whose DOM
@@ -267,8 +318,7 @@ function buildControls(){
 // wires one tool icon's popup: params tagged for that tool build inside a
 // shared floating panel that opens off the icon. Clicking a tool icon both
 // switches the active tool (as always) and opens/updates that popup;
-// clicking the already-open tool's icon again closes it - same toggle
-// behavior a hand-wired per-tool popup would have.
+// clicking the already-open tool's icon again closes it.
 function buildToolIcons(host, p, byTool){
   PV[p.k] = p.v;
   const lab = document.createElement("label"); lab.className = "ctl"; lab.dataset.key = p.k;
@@ -337,6 +387,7 @@ function buildOneControl(host, p){
     if (!(p.k in PV)) PV[p.k] = p.v;
     const cur = PV[p.k];
     const lab = document.createElement("label"); lab.className = "ctl"; lab.dataset.key = p.k;
+    if (p.desc) lab.setAttribute("data-tip", p.desc); // hover explanation, same tooltip style as the header icons
     if (p.l){
       const cap = document.createElement("span");
       cap.textContent = p.l + (p.u ? " (" + p.u + ")" : "");
@@ -569,6 +620,7 @@ palMore.onclick = () => {
   repositionPalette();
 };
 function openPalette(anchor, input){
+  if (palAnchor === anchor && palette.classList.contains("show")){ palette.classList.remove("show"); return; } // second click on the same swatch toggles it shut
   palPick = input; palAnchor = anchor;
   pcustom.classList.remove("show"); palMore.classList.remove("active");
   const cur = (input.value || "").toLowerCase();
@@ -588,6 +640,8 @@ window.addEventListener("pointerdown", e => {
 const api = {
   get W(){ return W; }, get H(){ return H; },
   get ctx(){ return wctx; }, get world(){ return world; },
+  get selectMode(){ return selectMode; }, // true while the runtime's own drag-select is active
+  get zoom(){ return zoom; }, // lets a tool keep an overlay's on-screen stroke width constant across zoom levels
   P: PV,
   bg: () => bgMode,
   ink: () => bgMode === "dark" ? "#eceaf6" : "#20202c",
@@ -1165,7 +1219,9 @@ if (selectBtn){
  * wheel while the tool is active. Any tool that repaints its own state fresh
  * every frame (e.g. a live simulation) will paint back over an erased area
  * on the next tick; tools whose canvas is the persistent record of what's
- * been drawn (most of them) keep the erase. */
+ * been drawn (most of them) keep the erase. This tool sets T.customEraser, so
+ * eraserActive() always reports false and this section stays dormant - the
+ * tool handles its own pixel-grid eraser in T.pointer() instead. */
 let erasing = false, eraserCursor = null;
 let eraserSize = +localStorage.getItem(KEY_ERASER) || 28;
 function eraserActive(){ return !T.customEraser && PV.tool === "eraser"; }
@@ -1217,6 +1273,9 @@ window.addEventListener("keydown", e => {
   if (ctrl || e.altKey || typingInField(e)) return;
   if (k === "b"){ applyParams({ tool:"brush" }); }
   else if (k === "e"){ applyParams({ tool:"eraser" }); }
+  else if (k === " "){ e.preventDefault(); $("playBtn").click(); }
+  else if (k === "arrowleft"){ $("prevFrameBtn").click(); }
+  else if (k === "arrowright"){ $("nextFrameBtn").click(); }
 });
 
 /* ---- black / white canvas ---------------------------------------------- */

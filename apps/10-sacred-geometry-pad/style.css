@@ -106,6 +106,8 @@ input[type=color].hiddenpick{display:none}
 .toolpop.show{display:flex}
 .toolpop .ctl{background:none;border:none;padding:0;white-space:normal}
 .toolpop select{width:100%}
+/* popup steppers use the exact same −/value/+ row as every other stepper
+   in the app - no toolpop-specific override */
 .svCanvas{width:100%;height:78px;border-radius:9px;cursor:crosshair;display:block;box-shadow:0 0 0 1px rgba(255,255,255,.16) inset}
 .hueCanvas{width:100%;height:12px;border-radius:99px;cursor:pointer;display:block;box-shadow:0 0 0 1px rgba(255,255,255,.16) inset}
 .hexRow{display:flex;align-items:center;gap:5px;background:rgba(255,255,255,.06);border:1px solid var(--line);
@@ -211,23 +213,6 @@ select:hover{border-color:rgba(255,255,255,.24)}
   background:none;border:none;outline:none;border-radius:6px;padding:2px 0;font-family:Consolas,monospace}
 #zoomPct:hover{color:var(--tx)}
 #zoomPct:focus{color:var(--tx);background:rgba(255,255,255,.08)}
-
-/* floating Delete / Rotate controls for an active selection - positioned in
-   JS above/below the selection's world bbox, so they live outside #zoombar */
-.selBtn{position:fixed;width:30px;height:30px;display:none;align-items:center;justify-content:center;
-  background:rgba(21,21,33,.92);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:99px;
-  color:var(--tx);cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.5);z-index:8;touch-action:none}
-.selBtn.show{display:flex}
-.selBtn:hover{background:rgba(255,255,255,.16)}
-#selDelete:hover{background:rgba(230,57,70,.4);border-color:rgba(230,57,70,.65)}
-#selRotate{cursor:grab}
-#selRotate:active{cursor:grabbing}
-/* angle readout - visible whenever the art is selected, showing its current absolute rotation */
-#rotDeg{position:fixed;display:none;transform:translateX(-50%);z-index:8;
-  background:rgba(21,21,33,.92);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:8px;
-  color:var(--tx);font:12px Consolas,monospace;font-weight:700;padding:3px 8px;pointer-events:none;
-  box-shadow:0 8px 22px rgba(0,0,0,.5)}
-#rotDeg.show{display:block}
 
 /* toast + modal */
 #resume{position:fixed;top:60px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:11px;

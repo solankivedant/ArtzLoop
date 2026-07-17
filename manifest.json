@@ -1,0 +1,13 @@
+{
+  "name": "ArtzLoop",
+  "short_name": "ArtzLoop",
+  "description": "Offline-capable generative art and drawing tools for the browser. No login, no backend, no analytics.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b0b13",
+  "theme_color": "#0b0b13",
+  "icons": [
+    { "src": "shared/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

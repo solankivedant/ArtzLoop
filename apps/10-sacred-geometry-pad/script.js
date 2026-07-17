@@ -26,99 +26,139 @@ function hslToRgb(h,s,l){
 }
 function hexToRgb(hex){const n=parseInt(hex.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255];}
 
-/* #04 Ink Marbling - tap to drop ink on water, drag to swirl it.
- * Classic suminagashi math: drops displace older drops radially; a swirl
- * stroke shears points near its path. Switch to the eraser (generic pixel
- * eraser, same as any other tool) to rub out part of the bath. */
+/* #13 Sacred Geometry Pad - lines and circles snap to a Metatron's-cube
+ * style grid and repeat across several symmetry axes at once. The guide grid
+ * is an overlay only - never part of the saved or downloaded art. */
 (function(){
-let api, drops = [], downAt = null, moved = false, lastComb = null;
-const VERTS = 100;
-const PALETTE = ["#26547c","#ef476f","#ffd166","#06d6a0","#7b6cf6","#f78c6b"];
-let palIdx = 0;
-
-function addDrop(x, y){
-  const r = api.P.diameter/2;
-  for (const d of drops){
-    const pts = d.pts;
-    for (let i = 0; i < pts.length; i += 2){
-      const dx = pts[i]-x, dy = pts[i+1]-y;
-      const dist = Math.max(.001, Math.hypot(dx, dy));
-      const f = Math.sqrt(1 + (r*r)/(dist*dist));
-      pts[i] = x + dx*f; pts[i+1] = y + dy*f;
+let api, shapes = [], draft = null, cursor = null;
+const GR = .62; // guide-grid radius, normalized to half the short side
+function geom(){ return { cx:api.W/2, cy:api.H/2, sc:Math.min(api.W,api.H)/2 }; }
+const GRID = (function(){ // 13 Metatron centers: middle + inner hex + outer hex
+  const pts = [[0,0]];
+  for (const r of [GR/2, GR])
+    for (let i = 0; i < 6; i++){
+      const a = Math.PI/3*i - Math.PI/2;
+      pts.push([Math.cos(a)*r, Math.sin(a)*r]);
     }
+  return pts;
+})();
+function snap(n){
+  if (!api.P.snap) return n;
+  let best = n, bd = .05;
+  for (const p of GRID){
+    const d = Math.hypot(n[0] - p[0], n[1] - p[1]);
+    if (d < bd){ bd = d; best = p; }
   }
-  const pts = new Array(VERTS*2);
-  for (let i = 0; i < VERTS; i++){
-    const a = Math.PI*2*i/VERTS;
-    pts[i*2] = x + r*Math.cos(a); pts[i*2+1] = y + r*Math.sin(a);
-  }
-  const col = api.P.auto ? PALETTE[palIdx++ % PALETTE.length] : api.P.col;
-  drops.push({ col, pts });
-  if (drops.length > 220) drops.shift();
-  api.dirty();
+  return best;
 }
-function comb(x, y){
-  if (!lastComb){ lastComb = [x, y]; return; }
-  const dx = x-lastComb[0], dy = y-lastComb[1];
-  const m = Math.hypot(dx, dy);
-  if (m < 2) return;
-  const ux = dx/m, uy = dy/m;
-  const z = Math.min(m, 14)*(api.P.strength/40);
-  const falloff = 22 + api.P.strength;
-  for (const d of drops){
-    const pts = d.pts;
-    for (let i = 0; i < pts.length; i += 2){
-      // perpendicular distance from the comb point
-      const px = pts[i]-x, py = pts[i+1]-y;
-      const dist = Math.abs(px*uy - py*ux) + Math.abs(px*ux + py*uy)*.35;
-      const f = z*Math.exp(-dist/falloff);
-      pts[i] += ux*f; pts[i+1] += uy*f;
+function xy(g, p, k, f, sym){
+  const an = Math.PI*2*k/sym, co = Math.cos(an), si = Math.sin(an);
+  return [g.cx + (p[0]*co - p[1]*f*si)*g.sc, g.cy + (p[0]*si + p[1]*f*co)*g.sc];
+}
+function drawShape(c, s){
+  const g = geom();
+  c.strokeStyle = s.col;
+  c.lineWidth = Math.max(.6, s.w);
+  c.lineCap = "round";
+  const R = Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1])*g.sc;
+  for (let k = 0; k < s.sym; k++)
+    for (const f of (s.mir ? [1,-1] : [1])){
+      const A = xy(g, s.a, k, f, s.sym);
+      c.beginPath();
+      if (s.type === "line"){
+        const B = xy(g, s.b, k, f, s.sym);
+        c.moveTo(A[0], A[1]); c.lineTo(B[0], B[1]);
+      } else c.arc(A[0], A[1], Math.max(.5, R), 0, 7);
+      c.stroke();
     }
-  }
-  lastComb = [x, y];
-  api.dirty();
 }
+function growShape(s){
+  const g = geom();
+  const e = (Math.hypot(s.a[0], s.a[1]) + Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]) + .05)*g.sc;
+  api.grow(g.cx - e, g.cy - e);
+  api.grow(g.cx + e, g.cy + e);
+}
+function redraw(){
+  for (const s of shapes) growShape(s);
+  api.clearWorld();
+  for (const s of shapes) drawShape(api.ctx, s);
+}
+const LINE_ICON = '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 19 19 5"/><circle cx="5" cy="19" r="1.6" fill="currentColor"/><circle cx="19" cy="5" r="1.6" fill="currentColor"/></svg>';
+const CIRC_ICON = '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/></svg>';
+const DRAW_ICON = '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
 window.TOOL = {
-  id:"marble", file:"marbling.art",
+  id:"sacredgeo", file:"sacredgeo.art",
   params:[
-    { k:"tool", t:"icons", l:"", v:"brush", opts:[
-      ["brush", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>', "Ink"],
-      ["eraser", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>', "Eraser"],
+    { k:"tool", t:"icons", l:"", v:"line", opts:[
+      ["line", LINE_ICON, "Line"],
+      ["circle", CIRC_ICON, "Circle"],
+      ["draw", DRAW_ICON, "Draw"],
     ]},
-    { k:"diameter", t:"range", l:"Diameter", min:10, max:80, step:1, v:38, u:"px", tool:"brush" },
-    { k:"strength", t:"range", l:"Swirl",    min:10, max:80, step:1, v:40, tool:"brush" },
-    { k:"esize", t:"range", l:"Eraser", min:10, max:200, step:1, v:60, u:"px", tool:"eraser" },
-    { k:"col",  t:"color",  l:"Ink",  v:"#ef476f" },
-    { k:"auto", t:"toggle", l:"Auto palette", v:true },
+    { k:"w",    t:"range",  l:"Width",  min:1, max:10, step:1, v:2, u:"px", tool:"draw" },
+    { k:"sym",  t:"range",  l:"Axes",   min:1, max:12, step:1, v:6, tool:"draw" },
+    { k:"col",  t:"color",  l:"Color",  v:"#ffd27f" },
+    { k:"mir",  t:"toggle", l:"Mirror", v:true },
+    { k:"snap", t:"toggle", l:"Snap",   v:true },
+    { k:"guide",t:"toggle", l:"Guide",  v:true },
   ],
   init(a){ api = a; },
   pointer(type, x, y){
-    if (type === "down"){ downAt = [x, y]; moved = false; lastComb = null; }
-    else if (type === "move" && downAt){
-      if (!moved && Math.hypot(x-downAt[0], y-downAt[1]) > 7) moved = true;
-      if (moved) comb(x, y);
-    } else if (type === "up" && downAt){
-      if (!moved) addDrop(downAt[0], downAt[1]);
-      downAt = null; lastComb = null;
+    if (api.P.tool !== "line" && api.P.tool !== "circle") return; // "Draw" icon is settings-only (Width/Axes popup)
+    const g = geom(), n = snap([(x - g.cx)/g.sc, (y - g.cy)/g.sc]);
+    cursor = n;
+    if (type === "down"){
+      draft = { type:api.P.tool, a:n, b:n, col:api.P.col, w:api.P.w, sym:api.P.sym, mir:api.P.mir };
+    } else if (type === "move" && draft){
+      draft.b = n;
+    } else if (type === "up" && draft){
+      draft.b = n;
+      if (Math.hypot(draft.b[0] - draft.a[0], draft.b[1] - draft.a[1]) > .004){
+        shapes.push(draft);
+        growShape(draft);
+        drawShape(api.ctx, draft);
+        api.dirty();
+      }
+      draft = null;
     }
   },
-  frame(){
-    // full re-render: the whole bath deforms every interaction
-    api.clearWorld();
-    const c = api.ctx;
-    for (const d of drops){
-      c.fillStyle = d.col;
+  overlay(c){
+    const g = geom();
+    if (api.P.guide){
+      const ink = api.bg() === "dark" ? "255,255,255" : "20,20,44";
+      c.lineWidth = 1;
+      c.strokeStyle = "rgba(" + ink + ",.10)";
+      for (const p of GRID){ // fruit-of-life circles
+        c.beginPath();
+        c.arc(g.cx + p[0]*g.sc, g.cy + p[1]*g.sc, GR/2*g.sc, 0, 7);
+        c.stroke();
+      }
+      c.strokeStyle = "rgba(" + ink + ",.05)";
+      c.beginPath(); // Metatron's cube: every center joined to every other
+      for (let i = 0; i < GRID.length; i++)
+        for (let j = i + 1; j < GRID.length; j++){
+          c.moveTo(g.cx + GRID[i][0]*g.sc, g.cy + GRID[i][1]*g.sc);
+          c.lineTo(g.cx + GRID[j][0]*g.sc, g.cy + GRID[j][1]*g.sc);
+        }
+      c.stroke();
+      c.fillStyle = "rgba(" + ink + ",.28)";
+      for (const p of GRID){
+        c.beginPath();
+        c.arc(g.cx + p[0]*g.sc, g.cy + p[1]*g.sc, 2.2, 0, 7);
+        c.fill();
+      }
+    }
+    if (draft) drawShape(c, draft);
+    if (cursor && api.P.snap){ // snapped-point highlight
+      c.strokeStyle = "rgba(109,124,255,.9)";
+      c.lineWidth = 1.4;
       c.beginPath();
-      c.moveTo(d.pts[0], d.pts[1]);
-      for (let i = 2; i < d.pts.length; i += 2) c.lineTo(d.pts[i], d.pts[i+1]);
-      c.closePath(); c.fill();
+      c.arc(g.cx + cursor[0]*g.sc, g.cy + cursor[1]*g.sc, 7, 0, 7);
+      c.stroke();
     }
   },
-  clear(){ drops = []; api.clearWorld(); },
-  serialize(){
-    return { drops: drops.map(d => ({ col:d.col, pts:d.pts.map(v => Math.round(v*10)/10) })) };
-  },
-  restore(s){ drops = (s && s.drops) || []; },
+  clear(){ shapes = []; draft = null; api.clearWorld(); },
+  serialize(){ return { shapes: shapes }; },
+  restore(s){ shapes = (s && s.shapes) || []; draft = null; redraw(); },
 };
 })();
 
@@ -234,10 +274,10 @@ let onToolSwitch = null; // set once the eraser section (below) exists, so switc
 // Every param renders inline in the sidebar EXCEPT ones tagged with a
 // `tool:"<key>"` field matching one of the tool-switcher's own option keys -
 // those live in a small popup that opens off that specific tool icon (e.g.
-// Diameter + Swirl behind the Ink icon, Eraser size behind the Eraser icon),
-// the same pattern a tool would hand-roll itself, just declarative. Untagged
-// controls (Ink color, Auto palette, ...) stay visible in the sidebar by
-// default - there's no generic catch-all settings dump.
+// Width + Axes behind the Draw icon), the same pattern a tool would
+// hand-roll itself, just declarative. Untagged controls (Color, Mirror,
+// Snap, Guide, ...) stay visible in the sidebar by default - there's no
+// generic catch-all settings dump.
 function buildControls(){
   const host = $("controls");
   // every param's value goes live in PV immediately, even ones whose DOM
@@ -255,8 +295,8 @@ function buildControls(){
   }
   if (toolParam) buildToolIcons(host, toolParam, byTool);
   // color comes right after the tool icons, then every remaining untagged
-  // control (Mirror, Rainbow, ...) in its declared order - a fixed reading
-  // order every tool shares: tools, color, on/off extras.
+  // control (Mirror, Snap, Guide, ...) in its declared order - a fixed
+  // reading order every tool shares: tools, color, on/off extras.
   for (const p of T.params) if (p.t === "color") buildOneControl(host, p);
   for (const p of T.params){
     if (p === toolParam || p.t === "color") continue;
@@ -267,8 +307,7 @@ function buildControls(){
 // wires one tool icon's popup: params tagged for that tool build inside a
 // shared floating panel that opens off the icon. Clicking a tool icon both
 // switches the active tool (as always) and opens/updates that popup;
-// clicking the already-open tool's icon again closes it - same toggle
-// behavior a hand-wired per-tool popup would have.
+// clicking the already-open tool's icon again closes it.
 function buildToolIcons(host, p, byTool){
   PV[p.k] = p.v;
   const lab = document.createElement("label"); lab.className = "ctl"; lab.dataset.key = p.k;
@@ -569,6 +608,7 @@ palMore.onclick = () => {
   repositionPalette();
 };
 function openPalette(anchor, input){
+  if (palAnchor === anchor && palette.classList.contains("show")){ palette.classList.remove("show"); return; } // second click on the same swatch toggles it shut
   palPick = input; palAnchor = anchor;
   pcustom.classList.remove("show"); palMore.classList.remove("active");
   const cur = (input.value || "").toLowerCase();
@@ -588,6 +628,8 @@ window.addEventListener("pointerdown", e => {
 const api = {
   get W(){ return W; }, get H(){ return H; },
   get ctx(){ return wctx; }, get world(){ return world; },
+  get selectMode(){ return selectMode; }, // true while the runtime's own drag-select is active
+  get zoom(){ return zoom; }, // lets a tool keep an overlay's on-screen stroke width constant across zoom levels
   P: PV,
   bg: () => bgMode,
   ink: () => bgMode === "dark" ? "#eceaf6" : "#20202c",
@@ -652,7 +694,7 @@ function blit(){
 }
 function setZoom(z){
   zoom = Math.min(8, Math.max(0.04, z));
-  $("zoomPct").value = Math.round(zoom * 100) + "%";
+  zoomPctEl.value = Math.round(zoom * 100) + "%";
 }
 // bounding box of everything drawn, in world coords (downsampled alpha scan)
 function contentBBox(){
@@ -699,6 +741,8 @@ function fitContent(){
 }
 $("zoomIn").onclick = () => setZoom(zoom * 1.25);
 $("zoomOut").onclick = () => setZoom(zoom / 1.25);
+// zoom % is a plain editable field, not a click-to-reset button: +/- keep
+// their fixed-step behavior, but you can type any exact percentage here.
 const zoomPctEl = $("zoomPct");
 zoomPctEl.addEventListener("focus", () => { zoomPctEl.value = Math.round(zoom*100).toString(); zoomPctEl.select(); });
 zoomPctEl.addEventListener("keydown", e => {
@@ -1162,10 +1206,8 @@ if (selectBtn){
  * The eraser's radius uses the tool's own "esize" param when it declares one
  * (grouped in the Eraser icon's popup, same as a hand-built one would be);
  * otherwise it falls back to a shared size, adjustable with the scroll
- * wheel while the tool is active. Any tool that repaints its own state fresh
- * every frame (e.g. a live simulation) will paint back over an erased area
- * on the next tick; tools whose canvas is the persistent record of what's
- * been drawn (most of them) keep the erase. */
+ * wheel while the tool is active. This tool has no "eraser" tool option, so
+ * eraserActive() always reports false and this section stays dormant. */
 let erasing = false, eraserCursor = null;
 let eraserSize = +localStorage.getItem(KEY_ERASER) || 28;
 function eraserActive(){ return !T.customEraser && PV.tool === "eraser"; }
@@ -1208,6 +1250,7 @@ window.addEventListener("keydown", e => {
   const ctrl = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
   if (ctrl && k === "s"){ e.preventDefault(); $("quickSaveBtn").click(); return; }
   if (ctrl && k === "o"){ e.preventDefault(); $("loadBtn").click(); return; }
+  if (ctrl && k === "m"){ e.preventDefault(); applyParams({ mir: !PV.mir }); return; }
   if (e.altKey && k === "c"){
     e.preventDefault();
     const sw = document.querySelector('[data-key="col"] .swatch');
@@ -1215,8 +1258,9 @@ window.addEventListener("keydown", e => {
     return;
   }
   if (ctrl || e.altKey || typingInField(e)) return;
-  if (k === "b"){ applyParams({ tool:"brush" }); }
-  else if (k === "e"){ applyParams({ tool:"eraser" }); }
+  if (k === "l"){ applyParams({ tool:"line" }); }
+  else if (k === "c"){ applyParams({ tool:"circle" }); }
+  else if (k === "g"){ applyParams({ guide: !PV.guide }); }
 });
 
 /* ---- black / white canvas ---------------------------------------------- */

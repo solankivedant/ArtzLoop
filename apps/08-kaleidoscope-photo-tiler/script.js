@@ -26,99 +26,156 @@ function hslToRgb(h,s,l){
 }
 function hexToRgb(hex){const n=parseInt(hex.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255];}
 
-/* #04 Ink Marbling - tap to drop ink on water, drag to swirl it.
- * Classic suminagashi math: drops displace older drops radially; a swirl
- * stroke shears points near its path. Switch to the eraser (generic pixel
- * eraser, same as any other tool) to rub out part of the bath. */
+/* #11 Kaleidoscope Photo Tiler - upload any photo, then drag the lens over
+ * it; whatever sits under the lens is tiled and mirrored into a live
+ * kaleidoscope pattern. Ghost photo + lens ring are guides only - they are
+ * never part of the saved or downloaded art. */
 (function(){
-let api, drops = [], downAt = null, moved = false, lastComb = null;
-const VERTS = 100;
-const PALETTE = ["#26547c","#ef476f","#ffd166","#06d6a0","#7b6cf6","#f78c6b"];
-let palIdx = 0;
-
-function addDrop(x, y){
-  const r = api.P.diameter/2;
-  for (const d of drops){
-    const pts = d.pts;
-    for (let i = 0; i < pts.length; i += 2){
-      const dx = pts[i]-x, dy = pts[i+1]-y;
-      const dist = Math.max(.001, Math.hypot(dx, dy));
-      const f = Math.sqrt(1 + (r*r)/(dist*dist));
-      pts[i] = x + dx*f; pts[i+1] = y + dy*f;
-    }
-  }
-  const pts = new Array(VERTS*2);
-  for (let i = 0; i < VERTS; i++){
-    const a = Math.PI*2*i/VERTS;
-    pts[i*2] = x + r*Math.cos(a); pts[i*2+1] = y + r*Math.sin(a);
-  }
-  const col = api.P.auto ? PALETTE[palIdx++ % PALETTE.length] : api.P.col;
-  drops.push({ col, pts });
-  if (drops.length > 220) drops.shift();
-  api.dirty();
+let api, img = null, imgURL = null, lens = null, dragging = false;
+function geom(){ return { cx:api.W/2, cy:api.H/2, sc:Math.min(api.W,api.H)/2 }; }
+function fitRect(){ // photo fitted inside the home rect (the ghost preview)
+  const g = geom();
+  const s = Math.min(api.W/img.width, api.H/img.height)*.94;
+  const w = img.width*s, h = img.height*s;
+  return { x:g.cx - w/2, y:g.cy - h/2, w:w, h:h, s:s };
 }
-function comb(x, y){
-  if (!lastComb){ lastComb = [x, y]; return; }
-  const dx = x-lastComb[0], dy = y-lastComb[1];
-  const m = Math.hypot(dx, dy);
-  if (m < 2) return;
-  const ux = dx/m, uy = dy/m;
-  const z = Math.min(m, 14)*(api.P.strength/40);
-  const falloff = 22 + api.P.strength;
-  for (const d of drops){
-    const pts = d.pts;
-    for (let i = 0; i < pts.length; i += 2){
-      // perpendicular distance from the comb point
-      const px = pts[i]-x, py = pts[i+1]-y;
-      const dist = Math.abs(px*uy - py*ux) + Math.abs(px*ux + py*uy)*.35;
-      const f = z*Math.exp(-dist/falloff);
-      pts[i] += ux*f; pts[i+1] += uy*f;
-    }
+function render(){
+  api.clearWorld();
+  if (!img || !lens) return;
+  const g = geom(), c = api.ctx, fr = fitRect();
+  const seg = api.P.seg, mir = api.P.mir;
+  const n = mir ? seg*2 : seg, th = Math.PI*2/n;
+  const PR = g.sc*.96, lr = Math.max(10, api.P.lens);
+  const M = (PR/lr)*fr.s; // photo px -> world px, lens content fills a wedge
+  const px = (lens[0] - fr.x)/fr.s, py = (lens[1] - fr.y)/fr.s;
+  for (let k = 0; k < n; k++){
+    c.save();
+    c.beginPath();
+    c.moveTo(g.cx, g.cy);
+    c.arc(g.cx, g.cy, PR, k*th - th/2 - .004, k*th + th/2 + .004);
+    c.closePath();
+    c.clip();
+    c.translate(g.cx, g.cy);
+    c.rotate(k*th);
+    if (mir && (k & 1)) c.scale(1, -1);
+    c.scale(M, M);
+    c.translate(-px, -py);
+    c.drawImage(img, 0, 0);
+    c.restore();
   }
-  lastComb = [x, y];
-  api.dirty();
 }
+function clampLens(p){
+  const fr = fitRect();
+  return [Math.max(fr.x, Math.min(fr.x + fr.w, p[0])),
+          Math.max(fr.y, Math.min(fr.y + fr.h, p[1]))];
+}
+function setPhoto(url, keepLens){
+  const im = new Image();
+  im.onload = () => {
+    img = im; imgURL = url;
+    if (!keepLens || !lens){
+      const fr = fitRect();
+      lens = [fr.x + fr.w/2, fr.y + fr.h/2];
+    }
+    render();
+    api.dirty();
+  };
+  im.src = url;
+}
+const pick = document.createElement("input");
+pick.type = "file"; pick.accept = "image/*";
+pick.addEventListener("change", () => {
+  const f = pick.files[0];
+  pick.value = "";
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    const im = new Image();
+    im.onload = () => { // downscale so saves stay small
+      const s = Math.min(1, 1280/Math.max(im.width, im.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(im.width*s); c.height = Math.round(im.height*s);
+      c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
+      setPhoto(c.toDataURL("image/jpeg", .85), false);
+    };
+    im.src = rd.result;
+  };
+  rd.readAsDataURL(f);
+});
+// same path data drives both the side-panel button icon and the canvas
+// placeholder graphic below, so the two always match exactly
+const CAMERA_PATH = "M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z";
+const CAMERA_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="' + CAMERA_PATH + '"/><circle cx="12" cy="13" r="4"/></svg>';
 window.TOOL = {
-  id:"marble", file:"marbling.art",
+  id:"phototiler", file:"phototiler.art",
   params:[
-    { k:"tool", t:"icons", l:"", v:"brush", opts:[
-      ["brush", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>', "Ink"],
-      ["eraser", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>', "Eraser"],
+    { k:"tool", t:"icons", l:"", v:"segments", opts:[
+      ["segments", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l7.79 4.5M12 12 4.21 16.5"/></svg>', "Segments"],
+      ["lens", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.35-4.35"/></svg>', "Lens"],
     ]},
-    { k:"diameter", t:"range", l:"Diameter", min:10, max:80, step:1, v:38, u:"px", tool:"brush" },
-    { k:"strength", t:"range", l:"Swirl",    min:10, max:80, step:1, v:40, tool:"brush" },
-    { k:"esize", t:"range", l:"Eraser", min:10, max:200, step:1, v:60, u:"px", tool:"eraser" },
-    { k:"col",  t:"color",  l:"Ink",  v:"#ef476f" },
-    { k:"auto", t:"toggle", l:"Auto palette", v:true },
+    { t:"button", l:"Photo", icon:CAMERA_ICON, fn:() => pick.click() },
+    { k:"seg",  t:"range",  l:"Segments", min:3, max:24, step:1, v:8, tool:"segments" },
+    { k:"lens", t:"range",  l:"Lens",     min:24, max:200, step:2, v:80, u:"px", tool:"lens" },
+    { k:"mir",  t:"toggle", l:"Mirror",   v:true },
   ],
   init(a){ api = a; },
+  onParam(){ if (img && lens){ render(); api.dirty(); } },
   pointer(type, x, y){
-    if (type === "down"){ downAt = [x, y]; moved = false; lastComb = null; }
-    else if (type === "move" && downAt){
-      if (!moved && Math.hypot(x-downAt[0], y-downAt[1]) > 7) moved = true;
-      if (moved) comb(x, y);
-    } else if (type === "up" && downAt){
-      if (!moved) addDrop(downAt[0], downAt[1]);
-      downAt = null; lastComb = null;
+    if (!img) return;
+    if (type === "down") dragging = true;
+    if (type === "up"){ dragging = false; api.dirty(); return; }
+    if (type === "down" || dragging){
+      lens = clampLens([x, y]);
+      render();
     }
   },
-  frame(){
-    // full re-render: the whole bath deforms every interaction
-    api.clearWorld();
-    const c = api.ctx;
-    for (const d of drops){
-      c.fillStyle = d.col;
+  overlay(c){
+    const g = geom();
+    if (!img){
+      const ink = api.bg() === "dark" ? "rgba(236,234,246,.6)" : "rgba(32,32,44,.6)";
+      const boxFill = api.bg() === "dark" ? "rgba(255,255,255,.06)" : "rgba(0,0,0,.045)";
+      const boxLine = api.bg() === "dark" ? "rgba(255,255,255,.14)" : "rgba(0,0,0,.13)";
+      // camera icon centered in a rounded square, matching the .ibtn tool-icon boxes in the side panel
+      const s = 1.6, boxSize = 72, iconCx = g.cx, iconCy = g.cy - 54;
+      c.save();
       c.beginPath();
-      c.moveTo(d.pts[0], d.pts[1]);
-      for (let i = 2; i < d.pts.length; i += 2) c.lineTo(d.pts[i], d.pts[i+1]);
-      c.closePath(); c.fill();
+      c.roundRect(iconCx - boxSize/2, iconCy - boxSize/2, boxSize, boxSize, 16);
+      c.fillStyle = boxFill; c.fill();
+      c.strokeStyle = boxLine; c.lineWidth = 1.5; c.stroke();
+      c.restore();
+      c.save();
+      c.translate(iconCx - 12*s, iconCy - 12*s);
+      c.scale(s, s);
+      c.strokeStyle = ink; c.lineWidth = 1.6; c.lineJoin = "round"; c.lineCap = "round";
+      c.stroke(new Path2D(CAMERA_PATH));
+      c.beginPath(); c.arc(12, 13, 4, 0, 7); c.stroke();
+      c.restore();
+      c.fillStyle = ink;
+      c.font = "15px 'Segoe UI',sans-serif";
+      c.textAlign = "center";
+      c.fillText("Upload a photo (Photo in the side panel), then drag the lens over it", g.cx, g.cy);
+      return;
+    }
+    const fr = fitRect();
+    c.globalAlpha = .16;
+    c.drawImage(img, fr.x, fr.y, fr.w, fr.h);
+    c.globalAlpha = 1;
+    if (lens){
+      c.strokeStyle = "rgba(255,255,255,.9)";
+      c.lineWidth = dragging ? 2.4 : 1.5;
+      c.setLineDash([5, 5]);
+      c.beginPath(); c.arc(lens[0], lens[1], api.P.lens, 0, 7); c.stroke();
+      c.setLineDash([]);
     }
   },
-  clear(){ drops = []; api.clearWorld(); },
-  serialize(){
-    return { drops: drops.map(d => ({ col:d.col, pts:d.pts.map(v => Math.round(v*10)/10) })) };
+  clear(){ img = null; imgURL = null; lens = null; api.clearWorld(); },
+  serialize(){ return { photo: imgURL, lens: lens }; },
+  restore(s){
+    s = s || {};
+    lens = s.lens || null;
+    if (s.photo) setPhoto(s.photo, true);
+    else { img = null; imgURL = null; api.clearWorld(); }
   },
-  restore(s){ drops = (s && s.drops) || []; },
 };
 })();
 
@@ -127,7 +184,10 @@ window.TOOL = {
  * world canvas), black/white background, undo/redo history, download/upload
  * (.art), localStorage autosave + resume, generative music, tool-grid popup.
  * The tool supplies window.TOOL (id, file, params, init, pointer, frame,
- * overlay, clear, serialize, restore, onParam, bgChanged, pixelated). */
+ * overlay, clear, serialize, restore, onParam, bgChanged, pixelated).
+ * One local addition: a "button" param may set `icon` (an SVG string) to
+ * render as an icon-only button (the label becomes its hover tooltip
+ * instead of visible text) - used for the Photo button's camera icon. */
 (function(){
 const T = window.TOOL;
 const $ = id => document.getElementById(id);
@@ -234,10 +294,10 @@ let onToolSwitch = null; // set once the eraser section (below) exists, so switc
 // Every param renders inline in the sidebar EXCEPT ones tagged with a
 // `tool:"<key>"` field matching one of the tool-switcher's own option keys -
 // those live in a small popup that opens off that specific tool icon (e.g.
-// Diameter + Swirl behind the Ink icon, Eraser size behind the Eraser icon),
-// the same pattern a tool would hand-roll itself, just declarative. Untagged
-// controls (Ink color, Auto palette, ...) stay visible in the sidebar by
-// default - there's no generic catch-all settings dump.
+// Segments behind the Segments icon, Lens behind the Lens icon), the same
+// pattern a tool would hand-roll itself, just declarative. Untagged controls
+// (Photo, Mirror, ...) stay visible in the sidebar by default - there's no
+// generic catch-all settings dump.
 function buildControls(){
   const host = $("controls");
   // every param's value goes live in PV immediately, even ones whose DOM
@@ -267,8 +327,7 @@ function buildControls(){
 // wires one tool icon's popup: params tagged for that tool build inside a
 // shared floating panel that opens off the icon. Clicking a tool icon both
 // switches the active tool (as always) and opens/updates that popup;
-// clicking the already-open tool's icon again closes it - same toggle
-// behavior a hand-wired per-tool popup would have.
+// clicking the already-open tool's icon again closes it.
 function buildToolIcons(host, p, byTool){
   PV[p.k] = p.v;
   const lab = document.createElement("label"); lab.className = "ctl"; lab.dataset.key = p.k;
@@ -326,7 +385,9 @@ function buildToolIcons(host, p, byTool){
 function buildOneControl(host, p){
     if (p.t === "button"){
       const b = document.createElement("button");
-      b.className = "chip"; b.textContent = p.l;
+      b.className = "chip";
+      if (p.icon){ b.innerHTML = p.icon; b.title = p.l; } // icon-only - label becomes the hover tooltip
+      else b.textContent = p.l;
       b.onclick = () => p.fn();
       host.appendChild(b); return;
     }
@@ -569,6 +630,7 @@ palMore.onclick = () => {
   repositionPalette();
 };
 function openPalette(anchor, input){
+  if (palAnchor === anchor && palette.classList.contains("show")){ palette.classList.remove("show"); return; } // second click on the same swatch toggles it shut
   palPick = input; palAnchor = anchor;
   pcustom.classList.remove("show"); palMore.classList.remove("active");
   const cur = (input.value || "").toLowerCase();
@@ -588,6 +650,8 @@ window.addEventListener("pointerdown", e => {
 const api = {
   get W(){ return W; }, get H(){ return H; },
   get ctx(){ return wctx; }, get world(){ return world; },
+  get selectMode(){ return selectMode; }, // true while the runtime's own drag-select is active
+  get zoom(){ return zoom; }, // lets a tool keep an overlay's on-screen stroke width constant across zoom levels
   P: PV,
   bg: () => bgMode,
   ink: () => bgMode === "dark" ? "#eceaf6" : "#20202c",
@@ -652,7 +716,7 @@ function blit(){
 }
 function setZoom(z){
   zoom = Math.min(8, Math.max(0.04, z));
-  $("zoomPct").value = Math.round(zoom * 100) + "%";
+  zoomPctEl.value = Math.round(zoom * 100) + "%";
 }
 // bounding box of everything drawn, in world coords (downsampled alpha scan)
 function contentBBox(){
@@ -699,6 +763,8 @@ function fitContent(){
 }
 $("zoomIn").onclick = () => setZoom(zoom * 1.25);
 $("zoomOut").onclick = () => setZoom(zoom / 1.25);
+// zoom % is a plain editable field, not a click-to-reset button: +/- keep
+// their fixed-step behavior, but you can type any exact percentage here.
 const zoomPctEl = $("zoomPct");
 zoomPctEl.addEventListener("focus", () => { zoomPctEl.value = Math.round(zoom*100).toString(); zoomPctEl.select(); });
 zoomPctEl.addEventListener("keydown", e => {
@@ -1162,10 +1228,8 @@ if (selectBtn){
  * The eraser's radius uses the tool's own "esize" param when it declares one
  * (grouped in the Eraser icon's popup, same as a hand-built one would be);
  * otherwise it falls back to a shared size, adjustable with the scroll
- * wheel while the tool is active. Any tool that repaints its own state fresh
- * every frame (e.g. a live simulation) will paint back over an erased area
- * on the next tick; tools whose canvas is the persistent record of what's
- * been drawn (most of them) keep the erase. */
+ * wheel while the tool is active. This tool has no "eraser" tool option, so
+ * eraserActive() always reports false and this section stays dormant. */
 let erasing = false, eraserCursor = null;
 let eraserSize = +localStorage.getItem(KEY_ERASER) || 28;
 function eraserActive(){ return !T.customEraser && PV.tool === "eraser"; }
@@ -1208,15 +1272,9 @@ window.addEventListener("keydown", e => {
   const ctrl = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
   if (ctrl && k === "s"){ e.preventDefault(); $("quickSaveBtn").click(); return; }
   if (ctrl && k === "o"){ e.preventDefault(); $("loadBtn").click(); return; }
-  if (e.altKey && k === "c"){
-    e.preventDefault();
-    const sw = document.querySelector('[data-key="col"] .swatch');
-    if (sw) sw.click();
-    return;
-  }
+  if (ctrl && k === "m"){ e.preventDefault(); applyParams({ mir: !PV.mir }); return; }
   if (ctrl || e.altKey || typingInField(e)) return;
-  if (k === "b"){ applyParams({ tool:"brush" }); }
-  else if (k === "e"){ applyParams({ tool:"eraser" }); }
+  if (k === "p"){ pick.click(); }
 });
 
 /* ---- black / white canvas ---------------------------------------------- */

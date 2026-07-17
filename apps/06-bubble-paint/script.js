@@ -26,99 +26,119 @@ function hslToRgb(h,s,l){
 }
 function hexToRgb(hex){const n=parseInt(hex.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255];}
 
-/* #04 Ink Marbling - tap to drop ink on water, drag to swirl it.
- * Classic suminagashi math: drops displace older drops radially; a swirl
- * stroke shears points near its path. Switch to the eraser (generic pixel
- * eraser, same as any other tool) to rub out part of the bath. */
+/* #12 Bubble Painting - hold to blow bubbles; they rise, wobble and pop into
+ * circular color blooms on the canvas. Eraser is hand-rolled (T.customEraser):
+ * a bloom is a whole object in `blooms`, not raw canvas pixels, so erasing
+ * removes the whole bubble it's aimed at and rebakes the rest - there's no
+ * partial/half erase of a single bubble. */
 (function(){
-let api, drops = [], downAt = null, moved = false, lastComb = null;
-const VERTS = 100;
-const PALETTE = ["#26547c","#ef476f","#ffd166","#06d6a0","#7b6cf6","#f78c6b"];
-let palIdx = 0;
-
-function addDrop(x, y){
-  const r = api.P.diameter/2;
-  for (const d of drops){
-    const pts = d.pts;
-    for (let i = 0; i < pts.length; i += 2){
-      const dx = pts[i]-x, dy = pts[i+1]-y;
-      const dist = Math.max(.001, Math.hypot(dx, dy));
-      const f = Math.sqrt(1 + (r*r)/(dist*dist));
-      pts[i] = x + dx*f; pts[i+1] = y + dy*f;
-    }
+let api, live = [], blooms = [], down = false, cursor = null, spawnAcc = 0, erasing = false;
+function bake(b){
+  const c = api.ctx, rnd = mulberry32(b.seed);
+  c.strokeStyle = b.col; c.globalAlpha = .85;
+  c.lineWidth = Math.max(1.2, b.r*.13);
+  c.beginPath(); c.arc(b.x, b.y, b.r, 0, 7); c.stroke();
+  c.globalAlpha = .16;
+  c.fillStyle = b.col;
+  c.beginPath(); c.arc(b.x, b.y, b.r*.92, 0, 7); c.fill();
+  c.globalAlpha = .8;
+  const n = 7 + Math.floor(rnd()*8);
+  for (let i = 0; i < n; i++){
+    const a = rnd()*Math.PI*2, d = b.r*(1.05 + rnd()*.55);
+    c.beginPath();
+    c.arc(b.x + Math.cos(a)*d, b.y + Math.sin(a)*d, .6 + rnd()*b.r*.07, 0, 7);
+    c.fill();
   }
-  const pts = new Array(VERTS*2);
-  for (let i = 0; i < VERTS; i++){
-    const a = Math.PI*2*i/VERTS;
-    pts[i*2] = x + r*Math.cos(a); pts[i*2+1] = y + r*Math.sin(a);
-  }
-  const col = api.P.auto ? PALETTE[palIdx++ % PALETTE.length] : api.P.col;
-  drops.push({ col, pts });
-  if (drops.length > 220) drops.shift();
-  api.dirty();
+  c.globalAlpha = 1;
 }
-function comb(x, y){
-  if (!lastComb){ lastComb = [x, y]; return; }
-  const dx = x-lastComb[0], dy = y-lastComb[1];
-  const m = Math.hypot(dx, dy);
-  if (m < 2) return;
-  const ux = dx/m, uy = dy/m;
-  const z = Math.min(m, 14)*(api.P.strength/40);
-  const falloff = 22 + api.P.strength;
-  for (const d of drops){
-    const pts = d.pts;
-    for (let i = 0; i < pts.length; i += 2){
-      // perpendicular distance from the comb point
-      const px = pts[i]-x, py = pts[i+1]-y;
-      const dist = Math.abs(px*uy - py*ux) + Math.abs(px*ux + py*uy)*.35;
-      const f = z*Math.exp(-dist/falloff);
-      pts[i] += ux*f; pts[i+1] += uy*f;
+function redrawAll(){
+  api.clearWorld();
+  for (const b of blooms) bake(b);
+}
+// erases the whole bubble under the cursor, in one bite - no mode, no
+// partial/segment removal, just gone. Topmost (most recently popped) first.
+function eraseBubbleAt(x, y){
+  for (let i = blooms.length - 1; i >= 0; i--){
+    const b = blooms[i];
+    if (Math.hypot(b.x - x, b.y - y) <= b.r){
+      blooms.splice(i, 1);
+      redrawAll();
+      api.dirty();
+      return;
     }
   }
-  lastComb = [x, y];
-  api.dirty();
 }
 window.TOOL = {
-  id:"marble", file:"marbling.art",
+  id:"bubble", file:"bubbles.art",
+  customEraser: true, // whole-bubble erase against `blooms`, not raw canvas pixels - see header comment
   params:[
-    { k:"tool", t:"icons", l:"", v:"brush", opts:[
-      ["brush", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>', "Ink"],
+    { k:"tool", t:"icons", l:"", v:"bubble", opts:[
+      ["bubble", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="13" r="8"/><circle cx="9" cy="10" r="1.6" fill="currentColor" stroke="none"/></svg>', "Bubble"],
       ["eraser", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>', "Eraser"],
     ]},
-    { k:"diameter", t:"range", l:"Diameter", min:10, max:80, step:1, v:38, u:"px", tool:"brush" },
-    { k:"strength", t:"range", l:"Swirl",    min:10, max:80, step:1, v:40, tool:"brush" },
-    { k:"esize", t:"range", l:"Eraser", min:10, max:200, step:1, v:60, u:"px", tool:"eraser" },
-    { k:"col",  t:"color",  l:"Ink",  v:"#ef476f" },
-    { k:"auto", t:"toggle", l:"Auto palette", v:true },
+    { k:"size", t:"range", l:"Bubble", min:6, max:60, step:1, v:26, u:"px", tool:"bubble" },
+    { k:"rate", t:"range", l:"Rate", min:1, max:20, step:1, v:8, u:"/s", tool:"bubble" },
+    { k:"life", t:"range", l:"Float", min:1, max:8, step:.5, v:3, u:"s", tool:"bubble" },
+    { k:"col", t:"color", l:"Color", v:"#7bdff2" },
+    { k:"rainbow", t:"toggle", l:"Rainbow", v:true },
   ],
   init(a){ api = a; },
   pointer(type, x, y){
-    if (type === "down"){ downAt = [x, y]; moved = false; lastComb = null; }
-    else if (type === "move" && downAt){
-      if (!moved && Math.hypot(x-downAt[0], y-downAt[1]) > 7) moved = true;
-      if (moved) comb(x, y);
-    } else if (type === "up" && downAt){
-      if (!moved) addDrop(downAt[0], downAt[1]);
-      downAt = null; lastComb = null;
+    if (api.P.tool === "eraser"){
+      if (type === "down") erasing = true;
+      if (type === "up"){ erasing = false; return; }
+      if (erasing) eraseBubbleAt(x, y);
+      return;
+    }
+    if (type === "down") down = true;
+    if (type === "up"){ down = false; return; }
+    cursor = [x, y];
+  },
+  frame(dt, t){
+    if (down && cursor){
+      spawnAcc += dt*api.P.rate;
+      while (spawnAcc >= 1){
+        spawnAcc--;
+        live.push({
+          x:cursor[0] + (Math.random()-.5)*20, y:cursor[1] + (Math.random()-.5)*10,
+          r:api.P.size*(.4 + Math.random()*.8),
+          vy:-(24 + Math.random()*46), wob:Math.random()*7,
+          age:0, ttl:api.P.life*(.5 + Math.random()),
+          col: api.P.rainbow ? hsl(Math.random()*360, 80, 62) : api.P.col,
+          seed:(Math.random()*1e9)|0,
+        });
+      }
+    }
+    for (let i = live.length-1; i >= 0; i--){
+      const b = live[i];
+      b.age += dt;
+      b.y += b.vy*dt;
+      b.x += Math.sin(t*3 + b.wob)*16*dt;
+      if (b.age > b.ttl || b.y < b.r + 4){
+        blooms.push({ x:b.x, y:b.y, r:b.r, col:b.col, seed:b.seed });
+        bake(blooms[blooms.length-1]);
+        live.splice(i, 1);
+        api.dirty();
+      }
     }
   },
-  frame(){
-    // full re-render: the whole bath deforms every interaction
+  overlay(c){
+    for (const b of live){
+      c.strokeStyle = b.col; c.globalAlpha = .8; c.lineWidth = 1.4;
+      c.beginPath(); c.arc(b.x, b.y, b.r, 0, 7); c.stroke();
+      c.globalAlpha = .9;
+      c.beginPath(); c.arc(b.x - b.r*.35, b.y - b.r*.35, b.r*.16, 0, 7);
+      c.fillStyle = "#fff"; c.fill();
+      c.globalAlpha = 1;
+    }
+  },
+  clear(){ live = []; blooms = []; api.clearWorld(); },
+  serialize(){ return { blooms }; },
+  restore(s){
+    blooms = (s && s.blooms) || []; live = [];
     api.clearWorld();
-    const c = api.ctx;
-    for (const d of drops){
-      c.fillStyle = d.col;
-      c.beginPath();
-      c.moveTo(d.pts[0], d.pts[1]);
-      for (let i = 2; i < d.pts.length; i += 2) c.lineTo(d.pts[i], d.pts[i+1]);
-      c.closePath(); c.fill();
-    }
+    for (const b of blooms) bake(b);
   },
-  clear(){ drops = []; api.clearWorld(); },
-  serialize(){
-    return { drops: drops.map(d => ({ col:d.col, pts:d.pts.map(v => Math.round(v*10)/10) })) };
-  },
-  restore(s){ drops = (s && s.drops) || []; },
 };
 })();
 
@@ -127,7 +147,11 @@ window.TOOL = {
  * world canvas), black/white background, undo/redo history, download/upload
  * (.art), localStorage autosave + resume, generative music, tool-grid popup.
  * The tool supplies window.TOOL (id, file, params, init, pointer, frame,
- * overlay, clear, serialize, restore, onParam, bgChanged, pixelated). */
+ * overlay, clear, serialize, restore, onParam, bgChanged, pixelated).
+ * One deliberate divergence from the canonical copy: the zoomFit button
+ * below always lands on exactly 100% (still centered on your bubbles) -
+ * floating bubbles don't benefit from an auto-computed fit scale the way a
+ * fixed drawing does. */
 (function(){
 const T = window.TOOL;
 const $ = id => document.getElementById(id);
@@ -234,10 +258,10 @@ let onToolSwitch = null; // set once the eraser section (below) exists, so switc
 // Every param renders inline in the sidebar EXCEPT ones tagged with a
 // `tool:"<key>"` field matching one of the tool-switcher's own option keys -
 // those live in a small popup that opens off that specific tool icon (e.g.
-// Diameter + Swirl behind the Ink icon, Eraser size behind the Eraser icon),
-// the same pattern a tool would hand-roll itself, just declarative. Untagged
-// controls (Ink color, Auto palette, ...) stay visible in the sidebar by
-// default - there's no generic catch-all settings dump.
+// Bubble size + Rate behind the Bubble icon), the same pattern a tool would
+// hand-roll itself, just declarative. Untagged controls (Float, Color,
+// Rainbow, ...) stay visible in the sidebar by default - there's no generic
+// catch-all settings dump.
 function buildControls(){
   const host = $("controls");
   // every param's value goes live in PV immediately, even ones whose DOM
@@ -267,8 +291,7 @@ function buildControls(){
 // wires one tool icon's popup: params tagged for that tool build inside a
 // shared floating panel that opens off the icon. Clicking a tool icon both
 // switches the active tool (as always) and opens/updates that popup;
-// clicking the already-open tool's icon again closes it - same toggle
-// behavior a hand-wired per-tool popup would have.
+// clicking the already-open tool's icon again closes it.
 function buildToolIcons(host, p, byTool){
   PV[p.k] = p.v;
   const lab = document.createElement("label"); lab.className = "ctl"; lab.dataset.key = p.k;
@@ -569,6 +592,7 @@ palMore.onclick = () => {
   repositionPalette();
 };
 function openPalette(anchor, input){
+  if (palAnchor === anchor && palette.classList.contains("show")){ palette.classList.remove("show"); return; } // second click on the same swatch toggles it shut
   palPick = input; palAnchor = anchor;
   pcustom.classList.remove("show"); palMore.classList.remove("active");
   const cur = (input.value || "").toLowerCase();
@@ -588,6 +612,8 @@ window.addEventListener("pointerdown", e => {
 const api = {
   get W(){ return W; }, get H(){ return H; },
   get ctx(){ return wctx; }, get world(){ return world; },
+  get selectMode(){ return selectMode; }, // true while the runtime's own drag-select is active
+  get zoom(){ return zoom; }, // lets a tool keep an overlay's on-screen stroke width constant across zoom levels
   P: PV,
   bg: () => bgMode,
   ink: () => bgMode === "dark" ? "#eceaf6" : "#20202c",
@@ -652,7 +678,7 @@ function blit(){
 }
 function setZoom(z){
   zoom = Math.min(8, Math.max(0.04, z));
-  $("zoomPct").value = Math.round(zoom * 100) + "%";
+  zoomPctEl.value = Math.round(zoom * 100) + "%";
 }
 // bounding box of everything drawn, in world coords (downsampled alpha scan)
 function contentBBox(){
@@ -680,25 +706,10 @@ function contentBBox(){
     w: (maxx - minx + 3)*px, h: (maxy - miny + 3)*py,
   };
 }
-function fitContent(){
-  // fit above the zoom bar / tool panel when either sits over the bottom of
-  // the canvas; if they were dragged elsewhere, use the full canvas
-  const v = viewSize(), b = contentBBox(), pad = 46;
-  const sr = screen.getBoundingClientRect();
-  let bar = 0;
-  for (const el of [$("zoombar"), $("panel")]){
-    const r = el.getBoundingClientRect();
-    if (r.left < sr.right && r.right > sr.left &&
-        r.top > sr.top + sr.height*.55 && r.top < sr.bottom)
-      bar = Math.max(bar, sr.bottom - r.top + 14);
-  }
-  bar = Math.min(bar, v.vh*.4);
-  setZoom(Math.min(v.vw/(b.w + pad*2), (v.vh - bar)/(b.h + pad*2)));
-  camX = b.x + b.w/2;
-  camY = b.y + b.h/2 + (bar/2)/zoom;
-}
 $("zoomIn").onclick = () => setZoom(zoom * 1.25);
 $("zoomOut").onclick = () => setZoom(zoom / 1.25);
+// zoom % is a plain editable field, not a click-to-reset button: +/- keep
+// their fixed-step behavior, but you can type any exact percentage here.
 const zoomPctEl = $("zoomPct");
 zoomPctEl.addEventListener("focus", () => { zoomPctEl.value = Math.round(zoom*100).toString(); zoomPctEl.select(); });
 zoomPctEl.addEventListener("keydown", e => {
@@ -710,7 +721,14 @@ zoomPctEl.addEventListener("blur", () => {
   if (!isNaN(n) && n > 0) setZoom(n/100);
   else zoomPctEl.value = Math.round(zoom*100) + "%";
 });
-$("zoomFit").onclick = fitContent;
+// this tool's Fit always lands on exactly 100% (still centered on your
+// bubbles) rather than an auto-computed fit scale - see header comment.
+$("zoomFit").onclick = () => {
+  const b = contentBBox();
+  camX = b.x + b.w/2;
+  camY = b.y + b.h/2;
+  setZoom(1);
+};
 screen.addEventListener("wheel", e => {
   e.preventDefault();
   if (eraserActive()){
@@ -1165,7 +1183,9 @@ if (selectBtn){
  * wheel while the tool is active. Any tool that repaints its own state fresh
  * every frame (e.g. a live simulation) will paint back over an erased area
  * on the next tick; tools whose canvas is the persistent record of what's
- * been drawn (most of them) keep the erase. */
+ * been drawn (most of them) keep the erase. This tool sets T.customEraser, so
+ * eraserActive() always reports false and this section stays dormant - the
+ * tool erases whole bubbles from `blooms` in T.pointer() instead. */
 let erasing = false, eraserCursor = null;
 let eraserSize = +localStorage.getItem(KEY_ERASER) || 28;
 function eraserActive(){ return !T.customEraser && PV.tool === "eraser"; }
@@ -1215,7 +1235,7 @@ window.addEventListener("keydown", e => {
     return;
   }
   if (ctrl || e.altKey || typingInField(e)) return;
-  if (k === "b"){ applyParams({ tool:"brush" }); }
+  if (k === "b"){ applyParams({ tool:"bubble" }); }
   else if (k === "e"){ applyParams({ tool:"eraser" }); }
 });
 
@@ -1297,7 +1317,7 @@ function applySession(data){
   T.restore(data.state || {});
   if (T.bgChanged) T.bgChanged();
   resetHistory();
-  setTimeout(fitContent, 120); // bring the restored art into view
+  setTimeout(() => { const b = contentBBox(); camX = b.x + b.w/2; camY = b.y + b.h/2; setZoom(1); }, 120); // bring the restored art into view
 }
 async function doUpload(file){
   if (typeof JSZip === "undefined"){ alert("Uploading needs the JSZip script - go online once and reload."); return; }

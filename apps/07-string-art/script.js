@@ -26,99 +26,68 @@ function hslToRgb(h,s,l){
 }
 function hexToRgb(hex){const n=parseInt(hex.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255];}
 
-/* #04 Ink Marbling - tap to drop ink on water, drag to swirl it.
- * Classic suminagashi math: drops displace older drops radially; a swirl
- * stroke shears points near its path. Switch to the eraser (generic pixel
- * eraser, same as any other tool) to rub out part of the bath. */
+/* #15 String-Art Loom - pegs around a shape; threads connect peg i to peg
+ * (i × k) mod n, the classic modular-multiplication loom. Bake layers to
+ * overlay several thread colors. */
 (function(){
-let api, drops = [], downAt = null, moved = false, lastComb = null;
-const VERTS = 100;
-const PALETTE = ["#26547c","#ef476f","#ffd166","#06d6a0","#7b6cf6","#f78c6b"];
-let palIdx = 0;
-
-function addDrop(x, y){
-  const r = api.P.diameter/2;
-  for (const d of drops){
-    const pts = d.pts;
-    for (let i = 0; i < pts.length; i += 2){
-      const dx = pts[i]-x, dy = pts[i+1]-y;
-      const dist = Math.max(.001, Math.hypot(dx, dy));
-      const f = Math.sqrt(1 + (r*r)/(dist*dist));
-      pts[i] = x + dx*f; pts[i+1] = y + dy*f;
-    }
+let api, layers = [];
+function pegPos(shape, n, i, cx, cy, rad){
+  const t = i/n;
+  if (shape === "square"){
+    const p = t*4, side = Math.floor(p), f = p-side;
+    const s = rad*1.6;
+    if (side === 0) return [cx - s/2 + f*s, cy - s/2];
+    if (side === 1) return [cx + s/2, cy - s/2 + f*s];
+    if (side === 2) return [cx + s/2 - f*s, cy + s/2];
+    return [cx - s/2, cy + s/2 - f*s];
   }
-  const pts = new Array(VERTS*2);
-  for (let i = 0; i < VERTS; i++){
-    const a = Math.PI*2*i/VERTS;
-    pts[i*2] = x + r*Math.cos(a); pts[i*2+1] = y + r*Math.sin(a);
+  if (shape === "heart"){
+    const a = t*Math.PI*2;
+    return [cx + rad*.058*(16*Math.pow(Math.sin(a), 3)),
+            cy - rad*.058*(13*Math.cos(a) - 5*Math.cos(2*a) - 2*Math.cos(3*a) - Math.cos(4*a))];
   }
-  const col = api.P.auto ? PALETTE[palIdx++ % PALETTE.length] : api.P.col;
-  drops.push({ col, pts });
-  if (drops.length > 220) drops.shift();
-  api.dirty();
+  const a = t*Math.PI*2 - Math.PI/2;
+  return [cx + rad*Math.cos(a), cy + rad*Math.sin(a)];
 }
-function comb(x, y){
-  if (!lastComb){ lastComb = [x, y]; return; }
-  const dx = x-lastComb[0], dy = y-lastComb[1];
-  const m = Math.hypot(dx, dy);
-  if (m < 2) return;
-  const ux = dx/m, uy = dy/m;
-  const z = Math.min(m, 14)*(api.P.strength/40);
-  const falloff = 22 + api.P.strength;
-  for (const d of drops){
-    const pts = d.pts;
-    for (let i = 0; i < pts.length; i += 2){
-      // perpendicular distance from the comb point
-      const px = pts[i]-x, py = pts[i+1]-y;
-      const dist = Math.abs(px*uy - py*ux) + Math.abs(px*ux + py*uy)*.35;
-      const f = z*Math.exp(-dist/falloff);
-      pts[i] += ux*f; pts[i+1] += uy*f;
-    }
+function drawPattern(c, p){
+  const cx = api.W/2, cy = api.H/2, rad = Math.min(api.W, api.H)*.4;
+  c.strokeStyle = p.col; c.globalAlpha = p.alpha; c.lineWidth = p.w;
+  for (let i = 1; i < p.n; i++){
+    const a = pegPos(p.shape, p.n, i, cx, cy, rad);
+    const b = pegPos(p.shape, p.n, (i*p.k)%p.n, cx, cy, rad);
+    c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
   }
-  lastComb = [x, y];
-  api.dirty();
+  c.globalAlpha = 1;
+  // pegs
+  c.fillStyle = api.bg() === "dark" ? "rgba(230,230,250,.5)" : "rgba(40,40,60,.5)";
+  for (let i = 0; i < p.n; i += Math.max(1, Math.floor(p.n/72))){
+    const q = pegPos(p.shape, p.n, i, cx, cy, rad);
+    c.fillRect(q[0]-1, q[1]-1, 2, 2);
+  }
+}
+function current(){
+  return { shape:api.P.shape, n:api.P.n, k:api.P.k, col:api.P.col, alpha:api.P.alpha, w:api.P.w };
 }
 window.TOOL = {
-  id:"marble", file:"marbling.art",
+  id:"stringart", file:"stringart.art",
   params:[
-    { k:"tool", t:"icons", l:"", v:"brush", opts:[
-      ["brush", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>', "Ink"],
-      ["eraser", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>', "Eraser"],
-    ]},
-    { k:"diameter", t:"range", l:"Diameter", min:10, max:80, step:1, v:38, u:"px", tool:"brush" },
-    { k:"strength", t:"range", l:"Swirl",    min:10, max:80, step:1, v:40, tool:"brush" },
-    { k:"esize", t:"range", l:"Eraser", min:10, max:200, step:1, v:60, u:"px", tool:"eraser" },
-    { k:"col",  t:"color",  l:"Ink",  v:"#ef476f" },
-    { k:"auto", t:"toggle", l:"Auto palette", v:true },
+    { k:"shape", t:"select", l:"Loom", v:"circle", opts:[["circle","Circle"],["square","Square"],["heart","Heart"]] },
+    { k:"n", t:"range", l:"Pegs", min:20, max:300, step:2, v:120 },
+    { k:"k", t:"range", l:"Skip ×", min:2, max:150, step:1, v:37 },
+    { k:"alpha", t:"range", l:"Thread", min:.08, max:1, step:.02, v:.45 },
+    { k:"w", t:"range", l:"Width", min:.5, max:2.5, step:.25, v:.75, u:"px" },
+    { k:"col", t:"color", l:"Color", v:"#f4a261" },
+    { k:"bake", t:"button", l:"✚ Bake layer", fn:() => { layers.push(current()); api.dirty(); } },
   ],
   init(a){ api = a; },
-  pointer(type, x, y){
-    if (type === "down"){ downAt = [x, y]; moved = false; lastComb = null; }
-    else if (type === "move" && downAt){
-      if (!moved && Math.hypot(x-downAt[0], y-downAt[1]) > 7) moved = true;
-      if (moved) comb(x, y);
-    } else if (type === "up" && downAt){
-      if (!moved) addDrop(downAt[0], downAt[1]);
-      downAt = null; lastComb = null;
-    }
-  },
   frame(){
-    // full re-render: the whole bath deforms every interaction
     api.clearWorld();
-    const c = api.ctx;
-    for (const d of drops){
-      c.fillStyle = d.col;
-      c.beginPath();
-      c.moveTo(d.pts[0], d.pts[1]);
-      for (let i = 2; i < d.pts.length; i += 2) c.lineTo(d.pts[i], d.pts[i+1]);
-      c.closePath(); c.fill();
-    }
+    for (const l of layers) drawPattern(api.ctx, l);
+    drawPattern(api.ctx, current());
   },
-  clear(){ drops = []; api.clearWorld(); },
-  serialize(){
-    return { drops: drops.map(d => ({ col:d.col, pts:d.pts.map(v => Math.round(v*10)/10) })) };
-  },
-  restore(s){ drops = (s && s.drops) || []; },
+  clear(){ layers = []; api.clearWorld(); },
+  serialize(){ return { layers }; },
+  restore(s){ layers = (s && s.layers) || []; },
 };
 })();
 
@@ -131,11 +100,10 @@ window.TOOL = {
 (function(){
 const T = window.TOOL;
 const $ = id => document.getElementById(id);
-const APP_VERSION = "2.3.0";
+const APP_VERSION = "2.2.0";
 const KEY_AUTO = "artzloop." + T.id + ".autosave";
 const KEY_BG = "artzloop.bg", KEY_MUTE = "artzloop.muted", KEY_TRACK = "artzloop.track";
 const KEY_PANEL = "artzloop.panel";
-const KEY_ERASER = "artzloop.eraserSize";
 const BGCOL = { dark:"#0b0b13", light:"#f6f4ef" };
 const BACKING_MAX = 48e6; // max world backing pixels (~192MB RGBA)
 
@@ -230,112 +198,16 @@ window.addEventListener("keydown", e => {
 
 /* ---- parameter controls --------------------------------------------- */
 const PV = {}, setters = {};
-let onToolSwitch = null; // set once the eraser section (below) exists, so switching tools can update the canvas cursor
-// Every param renders inline in the sidebar EXCEPT ones tagged with a
-// `tool:"<key>"` field matching one of the tool-switcher's own option keys -
-// those live in a small popup that opens off that specific tool icon (e.g.
-// Diameter + Swirl behind the Ink icon, Eraser size behind the Eraser icon),
-// the same pattern a tool would hand-roll itself, just declarative. Untagged
-// controls (Ink color, Auto palette, ...) stay visible in the sidebar by
-// default - there's no generic catch-all settings dump.
 function buildControls(){
   const host = $("controls");
-  // every param's value goes live in PV immediately, even ones whose DOM
-  // control is built lazily inside a tool popup - a param a tool reads every
-  // frame (brush size, symmetry, ...) must never be undefined just because
-  // nobody has opened that tool's popup yet. Only the DOM element itself is
-  // deferred; the value always exists.
-  for (const p of T.params) if (p.t !== "button") PV[p.k] = p.v;
-  const toolParam = T.params.find(p => p.k === "tool" && p.t === "icons");
-  const byTool = {};
   for (const p of T.params){
-    if (p === toolParam || p.t === "color") continue;
-    if (toolParam && p.tool && toolParam.opts.some(o => o[0] === p.tool))
-      (byTool[p.tool] = byTool[p.tool] || []).push(p);
-  }
-  if (toolParam) buildToolIcons(host, toolParam, byTool);
-  // color comes right after the tool icons, then every remaining untagged
-  // control (Mirror, Rainbow, ...) in its declared order - a fixed reading
-  // order every tool shares: tools, color, on/off extras.
-  for (const p of T.params) if (p.t === "color") buildOneControl(host, p);
-  for (const p of T.params){
-    if (p === toolParam || p.t === "color") continue;
-    if (toolParam && p.tool && byTool[p.tool] && byTool[p.tool].includes(p)) continue; // rendered in its tool's popup instead
-    buildOneControl(host, p);
-  }
-}
-// wires one tool icon's popup: params tagged for that tool build inside a
-// shared floating panel that opens off the icon. Clicking a tool icon both
-// switches the active tool (as always) and opens/updates that popup;
-// clicking the already-open tool's icon again closes it - same toggle
-// behavior a hand-wired per-tool popup would have.
-function buildToolIcons(host, p, byTool){
-  PV[p.k] = p.v;
-  const lab = document.createElement("label"); lab.className = "ctl"; lab.dataset.key = p.k;
-  if (p.l){
-    const cap = document.createElement("span"); cap.textContent = p.l;
-    lab.appendChild(cap);
-  }
-  const wrap = document.createElement("div"); wrap.className = "iconrow";
-  const btns = {};
-  const mark = () => { for (const v in btns) btns[v].classList.toggle("active", PV[p.k] === v); };
-  const pop = document.createElement("div");
-  pop.className = "toolpop";
-  document.body.appendChild(pop);
-  let openKey = null;
-  function position(anchor){
-    const r = anchor.getBoundingClientRect(), pr = pop.getBoundingClientRect();
-    let x = r.left - pr.width - 12;
-    if (x < 8) x = Math.min(window.innerWidth - pr.width - 8, r.right + 12);
-    const y = Math.max(8, Math.min(window.innerHeight - pr.height - 8, r.top - pr.height/2 + r.height/2));
-    pop.style.left = x + "px"; pop.style.top = y + "px";
-  }
-  function closePop(){ pop.classList.remove("show"); openKey = null; }
-  function openPopFor(key, anchor){
-    const params = byTool[key];
-    if (!params || !params.length){ closePop(); return; }
-    if (openKey === key && pop.classList.contains("show")){ closePop(); return; }
-    pop.innerHTML = "";
-    for (const gp of params) buildOneControl(pop, gp);
-    openKey = key;
-    pop.classList.add("show");
-    position(anchor);
-  }
-  for (const o of p.opts){
-    const b = document.createElement("button"); b.type = "button"; b.className = "ibtn";
-    b.innerHTML = o[1].replace(/width="19" height="19"/, 'width="15" height="15"'); b.title = o[2] || o[0];
-    b.dataset.key = p.k + ":" + o[0];
-    b.onclick = () => {
-      PV[p.k] = o[0]; mark();
-      if (T.onParam) T.onParam(p.k, o[0]);
-      if (onToolSwitch) onToolSwitch();
-      openPopFor(o[0], b);
-    };
-    btns[o[0]] = b; wrap.appendChild(b);
-  }
-  mark();
-  lab.appendChild(wrap);
-  setters[p.k] = () => mark();
-  host.appendChild(lab);
-  window.addEventListener("pointerdown", e => {
-    if (!pop.classList.contains("show")) return;
-    if (!pop.contains(e.target) && !wrap.contains(e.target)) closePop();
-  });
-  window.addEventListener("resize", () => { if (openKey) position(btns[openKey]); });
-}
-function buildOneControl(host, p){
     if (p.t === "button"){
       const b = document.createElement("button");
       b.className = "chip"; b.textContent = p.l;
       b.onclick = () => p.fn();
-      host.appendChild(b); return;
+      host.appendChild(b); continue;
     }
-    // the value may already be live in PV (buildControls initializes every
-    // param up front) and may already differ from p.v's static default - a
-    // deferred/lazily-built control (behind a tool popup) must pick up
-    // wherever the value currently is, not reset it back to the default.
-    if (!(p.k in PV)) PV[p.k] = p.v;
-    const cur = PV[p.k];
+    PV[p.k] = p.v;
     const lab = document.createElement("label"); lab.className = "ctl"; lab.dataset.key = p.k;
     if (p.l){
       const cap = document.createElement("span");
@@ -346,7 +218,7 @@ function buildOneControl(host, p){
       const wrap = document.createElement("span"); wrap.className = "stepper";
       const dec = document.createElement("button"); dec.type = "button"; dec.className = "step"; dec.textContent = "−";
       const inp = document.createElement("input"); inp.type = "number";
-      inp.min = p.min; inp.max = p.max; inp.step = p.step || 1; inp.value = cur;
+      inp.min = p.min; inp.max = p.max; inp.step = p.step || 1; inp.value = p.v;
       const inc = document.createElement("button"); inc.type = "button"; inc.className = "step"; inc.textContent = "+";
       const st = p.step || 1;
       const commit = v => {
@@ -364,8 +236,8 @@ function buildOneControl(host, p){
       setters[p.k] = v => { inp.value = v; };
     } else if (p.t === "color"){
       const sw = document.createElement("button"); sw.type = "button"; sw.className = "swatch";
-      sw.style.background = cur;
-      const i = document.createElement("input"); i.type = "color"; i.value = cur; i.className = "hiddenpick";
+      sw.style.background = p.v;
+      const i = document.createElement("input"); i.type = "color"; i.value = p.v; i.className = "hiddenpick";
       i.addEventListener("input", () => { PV[p.k] = i.value; sw.style.background = i.value; if (T.onParam) T.onParam(p.k, i.value); });
       sw.onclick = () => openPalette(sw, i);
       lab.appendChild(sw); lab.appendChild(i);
@@ -386,7 +258,7 @@ function buildOneControl(host, p){
       setters[p.k] = () => mark();
     } else if (p.t === "toggle"){
       const w = document.createElement("span"); w.className = "switch";
-      const i = document.createElement("input"); i.type = "checkbox"; i.checked = !!cur;
+      const i = document.createElement("input"); i.type = "checkbox"; i.checked = !!p.v;
       const k = document.createElement("span"); k.className = "knob";
       w.appendChild(i); w.appendChild(k);
       i.addEventListener("change", () => { PV[p.k] = i.checked; if (T.onParam) T.onParam(p.k, i.checked); });
@@ -398,17 +270,17 @@ function buildOneControl(host, p){
         const o = document.createElement("option"); o.value = v; o.textContent = l;
         s.appendChild(o);
       }
-      s.value = cur;
+      s.value = p.v;
       s.addEventListener("change", () => { PV[p.k] = s.value; if (T.onParam) T.onParam(p.k, s.value); });
       lab.appendChild(s);
       setters[p.k] = v => { s.value = v; };
     }
     host.appendChild(lab);
+  }
 }
 function applyParams(vals){
   for (const k in vals) if (k in PV){ PV[k] = vals[k]; if (setters[k]) setters[k](vals[k]); }
   if (T.onParam) for (const k in vals) if (k in PV) T.onParam(k, PV[k]);
-  if ("tool" in vals && onToolSwitch) onToolSwitch();
 }
 
 /* ---- shared color palette popup - presets + a built-in HSV picker ------
@@ -640,7 +512,6 @@ function blit(){
   sctx.drawImage(world,
     v.vw/2 + (wx0 - camX)*zoom, v.vh/2 + (wy0 - camY)*zoom,
     WW*zoom, WH*zoom);
-  drawRasterRotatePreview(v);
   if (T.overlay){
     sctx.save();
     sctx.translate(v.vw/2 - camX*zoom, v.vh/2 - camY*zoom);
@@ -648,7 +519,6 @@ function blit(){
     T.overlay(sctx);
     sctx.restore();
   }
-  drawEraserCursorRing(v);
 }
 function setZoom(z){
   zoom = Math.min(8, Math.max(0.04, z));
@@ -713,20 +583,6 @@ zoomPctEl.addEventListener("blur", () => {
 $("zoomFit").onclick = fitContent;
 screen.addEventListener("wheel", e => {
   e.preventDefault();
-  if (eraserActive()){
-    if (PV.esize != null){
-      const p = T.params.find(pp => pp.k === "esize");
-      let v = PV.esize * (e.deltaY < 0 ? 1.12 : 1/1.12);
-      if (p) v = Math.max(p.min, Math.min(p.max, v));
-      PV.esize = v;
-      if (setters.esize) setters.esize(v);
-      if (T.onParam) T.onParam("esize", v);
-    } else {
-      eraserSize = Math.max(4, Math.min(240, eraserSize * (e.deltaY < 0 ? 1.12 : 1/1.12)));
-      try { localStorage.setItem(KEY_ERASER, eraserSize); } catch (err) {}
-    }
-    return;
-  }
   const r = screen.getBoundingClientRect();
   const mx = e.clientX - r.left - r.width/2, my = e.clientY - r.top - r.height/2;
   const wx = camX + mx/zoom, wy = camY + my/zoom;
@@ -927,8 +783,7 @@ const panBtn = $("panBtn");
 panBtn.onclick = () => {
   panMode = !panMode;
   panBtn.classList.toggle("active", panMode);
-  if (panMode) screen.style.cursor = "grab";
-  else if (onToolSwitch) onToolSwitch();
+  screen.style.cursor = panMode ? "grab" : "crosshair";
 };
 window.addEventListener("keydown", e => {
   if (e.code === "Space" && !spaceHeld && e.target === document.body){
@@ -940,7 +795,7 @@ window.addEventListener("keydown", e => {
 window.addEventListener("keyup", e => {
   if (e.code === "Space"){
     spaceHeld = false;
-    if (!panMode){ if (onToolSwitch) onToolSwitch(); else screen.style.cursor = "crosshair"; }
+    if (!panMode) screen.style.cursor = "crosshair";
   }
 });
 function toWorldXY(clientX, clientY){
@@ -949,23 +804,10 @@ function toWorldXY(clientX, clientY){
           camY + (clientY - r.top - r.height/2)/zoom];
 }
 function ptr(type, e){
-  if (selectMode) return;
+  if (!T.pointer) return;
   const evs = (type === "move" && e.getCoalescedEvents) ? e.getCoalescedEvents() : [e];
   for (const ev of evs){
     const p = toWorldXY(ev.clientX, ev.clientY);
-    if (eraserActive()){
-      eraserCursor = p;
-      if (type === "down") erasing = true;
-      else if (type === "up"){ erasing = false; continue; }
-      if (erasing){
-        ensureVisible(p[0] - eraserSize, p[1] - eraserSize);
-        ensureVisible(p[0] + eraserSize, p[1] + eraserSize);
-        eraseAtWorld(p[0], p[1]);
-        dirtyFlag = true; scheduleSnapshot();
-      }
-      continue;
-    }
-    if (!T.pointer) continue;
     // grow the world under an active drawing gesture
     if (type === "down" || (type === "move" && e.buttons)) ensureVisible(p[0], p[1]);
     T.pointer(type, p[0], p[1], ev);
@@ -994,230 +836,13 @@ screen.addEventListener("pointermove", e => {
 function endPtr(e){
   if (panning){
     panning = null;
-    if (panMode || spaceHeld) screen.style.cursor = "grab";
-    else if (onToolSwitch) onToolSwitch();
-    else screen.style.cursor = "crosshair";
+    screen.style.cursor = (panMode || spaceHeld) ? "grab" : "crosshair";
     return;
   }
   ptr("up", e);
 }
 screen.addEventListener("pointerup", endPtr);
 screen.addEventListener("pointercancel", endPtr);
-
-/* ---- select-all + rotate/delete -----------------------------------------
- * Uses the tool's own precise per-object hooks (T.selectAll/getSelectionBBox/
- * deleteSelection/rotateSelectionStart/Preview/Commit[/getGlobalRot]) when it
- * provides them - e.g. a tool with discrete vector strokes can rotate each
- * object individually. Any tool that doesn't provide those hooks gets a
- * generic whole-canvas raster fallback instead: "select" grabs everything
- * currently drawn (via contentBBox), "rotate" spins a snapshot of those
- * pixels as one rigid image and bakes it back in on release, "delete" clears
- * the canvas. This makes the bottom-bar Select tool work the same way in
- * every tool regardless of its internal data model. This tool has no #selectBtn
- * in its markup, so this whole section stays dormant (every hook below is
- * gated on the element existing). */
-const selectBtn = $("selectBtn"), selDeleteBtn = $("selDelete"), selRotateBtn = $("selRotate"), rotDeg = $("rotDeg");
-let selectMode = false, rotating = null, curDragDelta = 0, rasterRot = null;
-function hasVectorSelect(){
-  return !!(T.selectAll && T.getSelectionBBox && T.deleteSelection &&
-    T.rotateSelectionStart && T.rotateSelectionPreview && T.rotateSelectionCommit);
-}
-function rasterBBox(){
-  const b = contentBBox();
-  return { x0:b.x, y0:b.y, x1:b.x + b.w, y1:b.y + b.h };
-}
-function currentSelBBox(){
-  if (!selectBtn) return null;
-  if (hasVectorSelect()) return T.getSelectionBBox();
-  return selectMode ? rasterBBox() : null;
-}
-function rasterRotateStart(bbox){
-  const cx = (bbox.x0 + bbox.x1)/2, cy = (bbox.y0 + bbox.y1)/2;
-  const w = Math.max(1, bbox.x1 - bbox.x0), h = Math.max(1, bbox.y1 - bbox.y0);
-  const diag = Math.ceil(Math.hypot(w, h)) + 16; // square big enough to hold any rotation
-  ensureVisible(cx - diag/2, cy - diag/2); ensureVisible(cx + diag/2, cy + diag/2);
-  const snap = document.createElement("canvas");
-  snap.width = diag; snap.height = diag;
-  snap.getContext("2d").drawImage(world,
-    (cx - diag/2 - wx0)*wdpr, (cy - diag/2 - wy0)*wdpr, diag*wdpr, diag*wdpr,
-    0, 0, diag, diag);
-  rasterRot = { snap, diag, cx, cy };
-}
-function rasterRotateCommit(){
-  if (!rasterRot) return;
-  const { snap, diag, cx, cy } = rasterRot;
-  ensureVisible(cx - diag/2, cy - diag/2); ensureVisible(cx + diag/2, cy + diag/2);
-  wctx.clearRect(cx - diag/2, cy - diag/2, diag, diag);
-  wctx.save();
-  wctx.translate(cx, cy);
-  wctx.rotate(curDragDelta);
-  wctx.drawImage(snap, -diag/2, -diag/2, diag, diag);
-  wctx.restore();
-  rasterRot = null;
-  dirtyFlag = true; scheduleSnapshot();
-}
-function drawRasterRotatePreview(v){
-  if (!rasterRot || !rotating) return;
-  const { snap, diag, cx, cy } = rasterRot;
-  const sx = v.vw/2 + (cx - camX)*zoom, sy = v.vh/2 + (cy - camY)*zoom;
-  sctx.fillStyle = BGCOL[bgMode];
-  sctx.fillRect(sx - diag/2*zoom - 2, sy - diag/2*zoom - 2, diag*zoom + 4, diag*zoom + 4);
-  sctx.save();
-  sctx.translate(sx, sy);
-  sctx.rotate(curDragDelta);
-  sctx.drawImage(snap, -diag/2*zoom, -diag/2*zoom, diag*zoom, diag*zoom);
-  sctx.restore();
-}
-function toScreenXY(wx, wy){
-  const v = viewSize(), r = screen.getBoundingClientRect();
-  return [r.left + v.vw/2 + (wx - camX)*zoom, r.top + v.vh/2 + (wy - camY)*zoom];
-}
-function showRotDeg(){
-  const base = hasVectorSelect() ? ((T.getGlobalRot && T.getGlobalRot()) || 0) : 0;
-  const deg = Math.round((((base + curDragDelta)*180/Math.PI + 180) % 360 + 360) % 360 - 180);
-  rotDeg.textContent = (deg > 0 ? "+" : "") + deg + "°";
-  const r = selRotateBtn.getBoundingClientRect();
-  rotDeg.style.left = (r.left + r.width/2) + "px";
-  rotDeg.style.top = (r.bottom + 8) + "px";
-  rotDeg.classList.add("show");
-}
-function positionSelectUI(){
-  if (!selectBtn) return;
-  const bbox = currentSelBBox();
-  if (!bbox){
-    selDeleteBtn.classList.remove("show");
-    selRotateBtn.classList.remove("show");
-    rotDeg.classList.remove("show");
-    return;
-  }
-  const [sx0, sy0] = toScreenXY(bbox.x0, bbox.y0), [sx1, sy1] = toScreenXY(bbox.x1, bbox.y1);
-  const left = Math.min(sx0, sx1), right = Math.max(sx0, sx1);
-  const top = Math.min(sy0, sy1), bottom = Math.max(sy0, sy1);
-  selDeleteBtn.style.left = (right + 6) + "px";
-  selDeleteBtn.style.top = (top - 36) + "px";
-  selDeleteBtn.classList.add("show");
-  selRotateBtn.style.left = ((left + right)/2 - 15) + "px";
-  selRotateBtn.style.top = (bottom + 14) + "px";
-  selRotateBtn.classList.add("show");
-  showRotDeg();
-}
-if (selectBtn){
-  selectBtn.onclick = () => {
-    selectMode = !selectMode;
-    selectBtn.classList.toggle("active", selectMode);
-    if (selectMode){
-      if (panMode){ panMode = false; panBtn.classList.remove("active"); }
-      if (hasVectorSelect()) T.selectAll();
-    } else if (hasVectorSelect()) T.clearSelection();
-    if (selectMode) screen.style.cursor = "crosshair";
-    else if (onToolSwitch) onToolSwitch();
-  };
-  selDeleteBtn.onclick = () => {
-    if (hasVectorSelect()){ T.deleteSelection(); return; }
-    if (!confirm("Clear the whole canvas?")) return;
-    T.clear();
-    camX = W/2; camY = H/2; setZoom(1);
-    dirtyFlag = true; scheduleSnapshot();
-    selectMode = false; selectBtn.classList.remove("active");
-  };
-  selRotateBtn.addEventListener("pointerdown", e => {
-    e.preventDefault(); e.stopPropagation();
-    selRotateBtn.setPointerCapture(e.pointerId);
-    const p = toWorldXY(e.clientX, e.clientY);
-    const bbox = currentSelBBox();
-    const cx = hasVectorSelect() ? W/2 : (bbox.x0 + bbox.x1)/2;
-    const cy = hasVectorSelect() ? H/2 : (bbox.y0 + bbox.y1)/2;
-    rotating = { cx, cy, start: Math.atan2(p[1] - cy, p[0] - cx) };
-    curDragDelta = 0;
-    if (hasVectorSelect()) T.rotateSelectionStart();
-    else rasterRotateStart(bbox);
-    showRotDeg();
-  });
-  selRotateBtn.addEventListener("pointermove", e => {
-    if (!rotating) return;
-    const p = toWorldXY(e.clientX, e.clientY);
-    curDragDelta = Math.atan2(p[1] - rotating.cy, p[0] - rotating.cx) - rotating.start;
-    if (hasVectorSelect()) T.rotateSelectionPreview(curDragDelta);
-    showRotDeg();
-  });
-  const endRotate = () => {
-    if (!rotating) return;
-    rotating = null;
-    if (hasVectorSelect()) T.rotateSelectionCommit();
-    else rasterRotateCommit();
-    curDragDelta = 0;
-    showRotDeg();
-  };
-  selRotateBtn.addEventListener("pointerup", endRotate);
-  selRotateBtn.addEventListener("pointercancel", endRotate);
-}
-
-/* ---- generic raster eraser ----------------------------------------------
- * Eraser is a sidebar tool icon like any other (not a separate bottom-bar
- * toggle) - a tool declares an "eraser" option on its own "tool" icons param,
- * same as it would for "brush". If the tool handles that value itself inside
- * T.pointer(), it sets T.customEraser = true to opt out; otherwise this
- * erases pixels straight out of the world canvas whenever that tool is
- * active, so any tool gets a working eraser with zero extra per-tool code.
- * The eraser's radius uses the tool's own "esize" param when it declares one
- * (grouped in the Eraser icon's popup, same as a hand-built one would be);
- * otherwise it falls back to a shared size, adjustable with the scroll
- * wheel while the tool is active. Any tool that repaints its own state fresh
- * every frame (e.g. a live simulation) will paint back over an erased area
- * on the next tick; tools whose canvas is the persistent record of what's
- * been drawn (most of them) keep the erase. */
-let erasing = false, eraserCursor = null;
-let eraserSize = +localStorage.getItem(KEY_ERASER) || 28;
-function eraserActive(){ return !T.customEraser && PV.tool === "eraser"; }
-function currentEraserSize(){ return PV.esize != null ? PV.esize : eraserSize; }
-function eraseAtWorld(wx, wy){
-  wctx.save();
-  wctx.globalCompositeOperation = "destination-out";
-  wctx.beginPath(); wctx.arc(wx, wy, currentEraserSize()/2, 0, Math.PI*2); wctx.fill();
-  wctx.restore();
-}
-function drawEraserCursorRing(v){
-  if (!eraserActive() || !eraserCursor) return;
-  const sx = v.vw/2 + (eraserCursor[0] - camX)*zoom, sy = v.vh/2 + (eraserCursor[1] - camY)*zoom;
-  sctx.save();
-  sctx.strokeStyle = "rgba(255,110,130,.85)";
-  sctx.lineWidth = 1.5; sctx.setLineDash([4, 4]);
-  sctx.beginPath(); sctx.arc(sx, sy, currentEraserSize()/2*zoom, 0, Math.PI*2); sctx.stroke();
-  sctx.restore();
-}
-onToolSwitch = () => {
-  screen.style.cursor = eraserActive() ? "none" : ((panMode || spaceHeld) ? "grab" : "crosshair");
-};
-window.addEventListener("keydown", e => {
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
-  const tag = (e.target && e.target.tagName) || "";
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-  const k = e.key.toLowerCase();
-  if (k === "s" && selectBtn){ e.preventDefault(); selectBtn.click(); }
-  else if ((e.key === "Delete" || e.key === "Backspace") && selectMode && selDeleteBtn){
-    e.preventDefault(); selDeleteBtn.click();
-  }
-});
-// keyboard shortcuts - Ctrl/Cmd combos work anywhere, bare letters are
-// ignored while typing in a text field (hex input, filename, etc.)
-function typingInField(e){
-  const t = e.target;
-  return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
-}
-window.addEventListener("keydown", e => {
-  const ctrl = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
-  if (ctrl && k === "s"){ e.preventDefault(); $("quickSaveBtn").click(); return; }
-  if (ctrl && k === "o"){ e.preventDefault(); $("loadBtn").click(); return; }
-  if (e.altKey && k === "c"){
-    e.preventDefault();
-    const sw = document.querySelector('[data-key="col"] .swatch');
-    if (sw) sw.click();
-    return;
-  }
-  if (ctrl || e.altKey || typingInField(e)) return;
-  if (k === "b"){ applyParams({ tool:"brush" }); }
-  else if (k === "e"){ applyParams({ tool:"eraser" }); }
-});
 
 /* ---- black / white canvas ---------------------------------------------- */
 function renderBgBtn(){
@@ -1437,9 +1062,9 @@ function boot(){
     const dt = Math.min(.05, (now - last) / 1000); last = now;
     if (T.frame) T.frame(dt, now / 1000);
     blit();
-    positionSelectUI();
     requestAnimationFrame(loop);
   })(performance.now());
 }
 boot();
 })();
+

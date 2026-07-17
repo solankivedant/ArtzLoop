@@ -12,15 +12,12 @@ Open [index.html](index.html) to browse the full grid of tools.
 | 02 | Digital spirograph generator | [apps/02-spirograph](apps/02-spirograph/index.html) |
 | 03 | Ink marbling / suminagashi simulator | [apps/03-ink-marbling](apps/03-ink-marbling/index.html) |
 | 04 | Action-painting splatter simulator | [apps/04-splatter-paint](apps/04-splatter-paint/index.html) |
-| 05 | Perlin flow-field particle painter | [apps/05-flow-field](apps/05-flow-field/index.html) |
-| 06 | Pixel-art flipbook animator | [apps/06-pixel-flipbook](apps/06-pixel-flipbook/index.html) |
-| 07 | Bubble painting simulator | [apps/07-bubble-paint](apps/07-bubble-paint/index.html) |
-| 08 | Digital string-art loom | [apps/08-string-art](apps/08-string-art/index.html) |
-| 09 | Voronoi stained-glass generator | [apps/09-voronoi-glass](apps/09-voronoi-glass/index.html) |
-| 10 | Cellular-automata art generator | [apps/10-cellular-automata](apps/10-cellular-automata/index.html) |
-| 11 | Kaleidoscope photo tiler | [apps/11-kaleidoscope-photo-tiler](apps/11-kaleidoscope-photo-tiler/index.html) |
-| 12 | Snowflake generator | [apps/12-snowflake-generator](apps/12-snowflake-generator/index.html) |
-| 13 | Sacred-geometry overlay pad | [apps/13-sacred-geometry-pad](apps/13-sacred-geometry-pad/index.html) |
+| 05 | Pixel-art flipbook animator | [apps/05-pixel-flipbook](apps/05-pixel-flipbook/index.html) |
+| 06 | Bubble painting simulator | [apps/06-bubble-paint](apps/06-bubble-paint/index.html) |
+| 07 | Digital string-art loom | [apps/07-string-art](apps/07-string-art/index.html) |
+| 08 | Kaleidoscope photo tiler | [apps/08-kaleidoscope-photo-tiler](apps/08-kaleidoscope-photo-tiler/index.html) |
+| 09 | Snowflake generator | [apps/09-snowflake-generator](apps/09-snowflake-generator/index.html) |
+| 10 | Sacred-geometry overlay pad | [apps/10-sacred-geometry-pad](apps/10-sacred-geometry-pad/index.html) |
 
 See [artzloop.md](artzloop.md) for the full tool spec and the master build prompt used to generate each one.
 

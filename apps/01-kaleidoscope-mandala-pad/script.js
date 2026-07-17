@@ -175,13 +175,23 @@ function makeWedgeTest(wedge, bx, by){
   const half = Math.PI / sym;
   const seedR = Math.hypot(bx - cx, by - cy);
   if (seedR < FILL_CENTER_EPS) return null; // seed itself is too close to center to have a meaningful angle
-  const seedDelta = normAngle(Math.atan2(by - cy, bx - cx) - axis);
+  // this copy's own true position - the wedge is centered here, not on `axis`
+  // (axis is only the shared mirror-reflection line, constant across every k;
+  // using it as the wedge center made the bounds check compare the seed's
+  // absolute angle against a fixed 0 deg reference instead of its own copy,
+  // so any fill seeded more than half a wedge away from absolute angle 0
+  // excluded itself on the very first pixel and silently painted nothing)
+  const seedAngle = Math.atan2(by - cy, bx - cx);
+  const seedDelta = normAngle(seedAngle - axis); // seed's side of the mirror line, for the mir check below
   return (x, y) => {
     const dx = x - cx, dy = y - cy;
     if (Math.hypot(dx, dy) < FILL_CENTER_EPS) return true; // never exclude the near-center hub itself
-    const delta = normAngle(Math.atan2(dy, dx) - axis);
-    if (Math.abs(delta) > half + 1e-6) return false; // different fold index than the seed
-    if (mir && Math.sign(delta) !== Math.sign(seedDelta) && Math.abs(delta) > 1e-3 && Math.abs(seedDelta) > 1e-3) return false; // wrong mirror half
+    const angle = Math.atan2(dy, dx);
+    if (Math.abs(normAngle(angle - seedAngle)) > half + 1e-6) return false; // different fold index than the seed
+    if (mir){
+      const delta = normAngle(angle - axis);
+      if (Math.sign(delta) !== Math.sign(seedDelta) && Math.abs(delta) > 1e-3 && Math.abs(seedDelta) > 1e-3) return false; // wrong mirror half
+    }
     return true;
   };
 }
@@ -657,6 +667,28 @@ window.TOOL = {
       c.beginPath(); c.arc(cursor[0], cursor[1], api.P.esize, 0, 7); c.stroke();
       c.setLineDash([]);
     }
+    if (api.P.tool === "fill" && cursor && !api.selectMode){
+      // a small paint-bucket glyph (same path data as the toolbar icon)
+      // replaces the plain crosshair while Fill is the active tool, so it's
+      // obvious at a glance which tool is armed - the drip is tinted with
+      // the color about to be applied, same live-preview trick as recolor's
+      // dot below. Fixed on-screen size (divided by zoom), same as above.
+      const z = api.zoom || 1;
+      c.save();
+      c.translate(cursor[0], cursor[1]);
+      c.scale(0.8/z, 0.8/z);
+      c.translate(-12, -11);
+      c.lineWidth = 2; c.lineJoin = "round"; c.lineCap = "round";
+      c.fillStyle = "rgba(21,21,33,.92)"; c.strokeStyle = "#fff";
+      c.stroke(new Path2D("m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"));
+      c.fill(new Path2D("m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"));
+      c.stroke(new Path2D("m5 2 5 5"));
+      c.stroke(new Path2D("M2 13h15"));
+      const drip = new Path2D("M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z");
+      c.fillStyle = api.P.col; c.fill(drip);
+      c.lineWidth = 1.2; c.strokeStyle = "rgba(255,255,255,.9)"; c.stroke(drip);
+      c.restore();
+    }
     if (api.P.tool === "recolor" && cursor && !api.selectMode){
       // whatever's currently under the cursor gets a visible highlight -
       // exactly the one symmetric copy a click would recolor - before you
@@ -1010,7 +1042,7 @@ function applyParams(vals){
  * whole flow on-brand) */
 const PAL_COLORS = ["#000000","#7f7f7f","#880015","#ed1c24","#ff7f27","#fff200","#22b14c","#00a2e8",
   "#3f48cc","#a349a4","#ffffff","#c3c3c3","#b97a57","#ffaec9","#ffc90e","#efe4b0"];
-const PAL_BRAND = ["#5ee6ff","#6d7cff","#3fd8d0","#f4c542"]; // ArtzLoop accents, incl. this tool's default
+const PAL_BRAND = ["#5ee6ff","#6d7cff","#3fd8d0","#f4c542","#cfe9ff"]; // ArtzLoop accents, incl. this tool's default
 function hsv2rgb(h, s, v){
   const c = v*s, x = c*(1 - Math.abs((h/60)%2 - 1)), m = v - c;
   let r, g, b;

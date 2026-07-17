@@ -71,7 +71,7 @@ compute (auth, score validation, leaderboard queries, live competitions).
 These carry forward from [CLAUDE.md](CLAUDE.md) and should not be silently
 abandoned as the project grows a backend:
 
-1. **The current 13 tools must keep working fully offline, with zero
+1. **The current tools must keep working fully offline, with zero
    account, forever.** Cloud features (profile, sync, leaderboards,
    challenges, competitions, billing) are strictly **additive and
    opt-in** — a tool opened with no network and no login must behave
@@ -223,7 +223,7 @@ tool optionally includes:
   returns a short ID; if it fails, the existing local `.art` download
   still works exactly as today.
 
-This keeps every one of the 13 tools' `script.js`/`style.css` untouched by
+This keeps every existing tool's `script.js`/`style.css` untouched by
 default — the SDK is additive, and a tool only needs new UI (e.g. "Today's
 Challenge" banner, "Share" button) when its owner decides to wire it up.
 
@@ -610,7 +610,7 @@ than guessed:
   the same domain/app, or a clearly separate product tier/URL? Affects
   routing, marketing, and how hard the "tools still work offline" promise
   needs to be visually communicated to new users.
-- **Which tools get a "score" first?** Not all 13 tools have an obvious
+- **Which tools get a "score" first?** Not all tools have an obvious
   competitive metric (e.g., Ink Marbling is exploratory, not
   timed/precision-based). Needs a per-tool design pass before Phase 2.
 - **Managed vs. self-hosted auth/realtime long-term**: fine to start
