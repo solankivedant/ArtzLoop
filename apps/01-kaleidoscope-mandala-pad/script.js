@@ -651,6 +651,7 @@ window.TOOL = {
       liveSeg(p, cn, live);
     } else if (type === "up" && live){
       strokes.push(live); live = null; api.dirty();
+      if (window.dailyChallenge) window.dailyChallenge.onStrokeCommitted();
     }
   },
   overlay(c){
@@ -763,7 +764,8 @@ const KEY_AUTO = "artzloop." + T.id + ".autosave";
 const KEY_BG = "artzloop.bg", KEY_MUTE = "artzloop.muted", KEY_TRACK = "artzloop.track";
 const KEY_PANEL = "artzloop.panel";
 const BGCOL = { dark:"#0b0b13", light:"#f6f4ef" };
-const BACKING_MAX = 48e6; // max world backing pixels (~192MB RGBA)
+const BACKING_MAX = 200e6; // max world backing pixels (~800MB RGBA) - well under real browsers' canvas-area limits
+const DIM_MAX = 14000; // max single backing dimension - keeps a very elongated (non-square) drawing under real browsers' per-axis canvas limits even though its area alone is still under BACKING_MAX
 
 let bgMode = localStorage.getItem(KEY_BG) === "light" ? "light" : "dark";
 let gridOn = localStorage.getItem("artzloop.grid") !== "0";
@@ -790,6 +792,7 @@ function rebuildWorld(nx0, ny0, nW, nH){
   let nd = wdpr;
   if (nW*nH*nd*nd > BACKING_MAX) nd = 1;
   if (nW*nH*nd*nd > BACKING_MAX) return false; // hard cap reached
+  if (nW*nd > DIM_MAX || nH*nd > DIM_MAX) return false; // a single axis alone would exceed the browser's real canvas limit
   const nc = document.createElement("canvas");
   nc.width = Math.round(nW*nd);
   nc.height = Math.round(nH*nd);
@@ -1828,6 +1831,23 @@ $("dlArt").onclick = () => { dlMenu.classList.remove("show"); doDownload(); };
 $("dlPng").onclick = () => { dlMenu.classList.remove("show"); exportImage("png", false); };
 $("dlPngT").onclick = () => { dlMenu.classList.remove("show"); exportImage("png", true); };
 $("dlJpg").onclick = () => { dlMenu.classList.remove("show"); exportImage("jpeg", false); };
+// exports the live strokes as a portable Daily Challenge design - the same
+// {pts,col,size,sym,mir,rot} schema shared/daily-challenge.js expects, with
+// the editable-only fields (hidden/cuts/cutAll/colOverride) dropped since a
+// freshly-authored target design has no erase/recolor history to carry
+$("dlChallenge").onclick = () => {
+  dlMenu.classList.remove("show");
+  const design = {
+    id: "kaleido-" + Date.now(),
+    strokes: T.serialize().strokes.map(s => ({ pts:s.pts, col:s.col, size:s.size, sym:s.sym, mir:s.mir, rot:s.rot || 0 })),
+  };
+  const blob = new Blob([JSON.stringify(design, null, 2)], { type:"application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "challenge-design.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
 $("loadBtn").onclick = () => $("fileInput").click();
 $("fileInput").addEventListener("change", e => {
   if (e.target.files[0]) doUpload(e.target.files[0]);
@@ -1840,12 +1860,18 @@ screen.addEventListener("drop", e => {
 });
 
 /* ---- clear -------------------------------------------------------------- */
-$("clearBtn").onclick = () => {
-  if (!confirm("Clear the whole canvas?")) return;
+// factored out from the button handler so the Daily Challenge flow (which
+// has its own inline confirm before clearing) can reuse the actual clear
+// logic without popping a second native confirm() on top of it
+function doClearCanvas(){
   T.clear();
   camX = W/2; camY = H/2; setZoom(1);
   dirtyFlag = true;
   scheduleSnapshot();
+}
+$("clearBtn").onclick = () => {
+  if (!confirm("Clear the whole canvas?")) return;
+  doClearCanvas();
 };
 
 /* ---- tool-grid popup ------------------------------------------------------ */
@@ -1853,6 +1879,16 @@ const modal = $("modal");
 $("toolsBtn").onclick = () => modal.classList.add("show");
 $("modalX").onclick = () => modal.classList.remove("show");
 modal.addEventListener("click", e => { if (e.target === modal) modal.classList.remove("show"); });
+
+/* ---- daily challenge ------------------------------------------------------ */
+// exposed on window so the tool-specific IIFE above (a separate closure) can
+// notify it from the stroke-commit point in T.pointer()
+window.dailyChallenge = window.DailyChallenge && window.DailyChallenge.mount("kaleido", {
+  pool: window.CHALLENGE_POOL_KALEIDOSCOPE || [],
+  getUserStrokes: () => T.serialize().strokes,
+  clearCanvas: () => doClearCanvas(),
+  buttonEl: $("challengeBtn"),
+});
 
 /* ---- help popup ------------------------------------------------------------ */
 const helpModal = $("helpModal");

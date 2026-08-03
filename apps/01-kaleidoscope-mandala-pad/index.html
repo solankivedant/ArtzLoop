@@ -7,6 +7,8 @@
 <link rel="stylesheet" href="style.css">
 <script src="../../shared/vendor/jszip-3.10.1.min.js" defer></script>
 <script src="../../shared/vendor/tone-14.8.49.js" defer></script>
+<script src="../../shared/daily-challenges/kaleidoscope.js" defer></script>
+<script src="../../shared/daily-challenge.js" defer></script>
 <script src="script.js" defer></script>
 </head>
 <body>
@@ -14,6 +16,9 @@
   <div class="brand">
     <button id="toolsBtn" class="btn icon" data-tip="Browse all tools">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+    </button>
+    <button id="challengeBtn" class="btn icon" data-tip="Daily Challenge">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M8 14h2M8 18h2M14 14h2M14 18h2"/></svg>
     </button>
     <span class="logo"></span>
     <span class="num">#01</span><span class="name">Kaleidoscope Mandala Pad</span>
@@ -53,6 +58,8 @@
         <button id="dlPng">Image <span>.png</span></button>
         <button id="dlPngT">Transparent <span>.png</span></button>
         <button id="dlJpg">Image <span>.jpg</span></button>
+        <div class="dlSep"></div>
+        <button id="dlChallenge">Challenge design <span>.json</span></button>
       </div>
     </div>
     <button id="loadBtn" class="btn" data-tip="Upload a saved .art file to continue it (Ctrl+O)">

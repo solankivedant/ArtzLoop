@@ -188,7 +188,8 @@ const KEY_BG = "artzloop.bg", KEY_MUTE = "artzloop.muted", KEY_TRACK = "artzloop
 const KEY_PANEL = "artzloop.panel";
 const KEY_ERASER = "artzloop.eraserSize";
 const BGCOL = { dark:"#0b0b13", light:"#f6f4ef" };
-const BACKING_MAX = 48e6; // max world backing pixels (~192MB RGBA)
+const BACKING_MAX = 200e6; // max world backing pixels (~800MB RGBA) - well under real browsers' canvas-area limits
+const DIM_MAX = 14000; // max single backing dimension - keeps a very elongated (non-square) drawing under real browsers' per-axis canvas limits even though its area alone is still under BACKING_MAX
 
 let bgMode = localStorage.getItem(KEY_BG) === "light" ? "light" : "dark";
 let gridOn = localStorage.getItem("artzloop.grid") !== "0";
@@ -215,6 +216,7 @@ function rebuildWorld(nx0, ny0, nW, nH){
   let nd = wdpr;
   if (nW*nH*nd*nd > BACKING_MAX) nd = 1;
   if (nW*nH*nd*nd > BACKING_MAX) return false; // hard cap reached
+  if (nW*nd > DIM_MAX || nH*nd > DIM_MAX) return false; // a single axis alone would exceed the browser's real canvas limit
   const nc = document.createElement("canvas");
   nc.width = Math.round(nW*nd);
   nc.height = Math.round(nH*nd);
