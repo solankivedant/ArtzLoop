@@ -174,7 +174,7 @@ Everything below is genuinely new product surface. Grouped by theme:
                        │                     │                     │
                ┌───────▼───────┐   ┌─────────▼─────────┐   ┌───────▼───────┐
                │  Web/App shell │   │   API Gateway /     │   │  WebSocket    │
-               │ (Next/SvelteKit│   │   Load Balancer      │   │  Gateway      │
+               │ (Next.js,      │   │   Load Balancer      │   │  Gateway      │
                │  — profile,    │   │  (rate limit, authN) │   │ (competitions,│
                │  leaderboard,  │   └─────────┬─────────┘   │  live LB)     │
                │  challenge UI) │             │              └───────┬───────┘
@@ -206,6 +206,11 @@ Everything below is genuinely new product surface. Grouped by theme:
                │ Stripe (billing)│
                └─────────────────┘
 ```
+
+Mobile isn't a separate box in this diagram — it ships as a **Capacitor**
+wrap of the same Web/App shell, reusing the existing tools unchanged inside
+a WebView. See [tech-stack.md §6](tech-stack.md#6-mobile-app) for the track
+decision and store-review requirements.
 
 ### 5.1 How existing tools plug in without a rewrite
 Introduce a small first-party script, `shared/artzloop-sdk.js`, that each
@@ -315,19 +320,25 @@ cookie; all mutating endpoints require CSRF protection if cookie-based.
 | Layer | Recommendation | Why |
 |---|---|---|
 | Existing tools | Unchanged: vanilla HTML/CSS/JS, Canvas2D, Tone.js | Zero risk to what already works |
-| App shell (new) | Next.js or SvelteKit, TypeScript | Owns profile/leaderboard/challenge/paywall UI; tools embed as-is |
-| API server | Node.js + TypeScript, Fastify (lean) or NestJS (structured) | Same language as frontend → shared types, faster hiring/onboarding |
-| Realtime | Socket.IO self-hosted, or managed (Ably/Pusher) for MVP | Managed removes ops burden for competitions/live leaderboard at low initial volume |
-| Primary DB | PostgreSQL (managed: RDS / Neon / Supabase) | Relational integrity for users/scores/billing; mature tooling |
-| Cache / ephemeral | Redis (managed: Upstash / Elasticache) | Leaderboard sorted sets, rate limiting, session cache |
-| Object storage | Cloudflare R2 or AWS S3 | `.art` files, thumbnails, avatars; R2 has no egress fee |
-| Queue / async | BullMQ (Redis-backed) or SQS | Thumbnail generation, score verification, webhook handling |
-| Auth | Managed (Clerk / Supabase Auth / Auth0) for MVP; revisit self-hosted only at scale | Cuts weeks off Phase 1, handles OAuth + email flows correctly |
-| Billing | Stripe (Billing + Checkout) | Industry standard, handles subscriptions + one-off IAP + webhooks |
-| Hosting/infra | Fly.io or Render for API (MVP); ECS Fargate or Kubernetes only if/when scale demands it | Low ops overhead first; avoid Kubernetes complexity until there's a real reason |
+| App shell (new) | Next.js, TypeScript | Owns profile/leaderboard/challenge/paywall UI; tools embed as-is |
+| Mobile app (new) | Capacitor wrapping the same Next.js app shell (Track A) | iOS/Android from one codebase, reuses all existing tools untouched; only revisit a native rewrite (Track B, React Native + `react-native-skia`) if a specific tool's WebView perf ceiling is hit |
+| API server | Node.js + TypeScript, Fastify | Same language as frontend → shared types; a dedicated gateway product (Kong, Apigee) is overkill until there are multiple independently-deployed backend services |
+| API Gateway / edge | Cloudflare (WAF, rate limiting, caching) in front of the Fastify pool | Two-layer gateway — edge (Cloudflare) handles rate limiting/WAF, application (Fastify's own auth + zod validation middleware) handles the rest; no separate gateway product needed at MVP scale |
+| Realtime | Socket.IO (self-hosted), or managed (Ably/Pusher) for MVP, backed by Redis Pub/Sub | Managed removes ops burden for competitions/live leaderboard at low initial volume; Redis Pub/Sub lets any gateway instance broadcast to any connected client regardless of which instance they're on |
+| Primary DB | PostgreSQL (Neon or Supabase to start; RDS if you outgrow serverless Postgres) | Relational integrity for users/scores/billing; mature tooling |
+| Cache / ephemeral | Redis (Upstash to start) | Leaderboard sorted sets, rate limiting, matchmaking queues, session cache |
+| Object storage | Cloudflare R2 | `.art` files, thumbnails, avatars; no egress fee |
+| Queue / async | BullMQ (Redis-backed) | Thumbnail generation, score verification, webhook handling, challenge seed rollover |
+| Auth | Clerk or Supabase Auth (managed) for MVP; revisit self-hosted only at scale | Cuts weeks off Phase 1, handles OAuth + email flows correctly |
+| Billing | Stripe (web) + RevenueCat (mobile IAP wrapper) | Stripe handles subscriptions, one-off IAP, and webhooks on web; RevenueCat unifies Apple/Google/Stripe entitlements once mobile ships — Apple requires native IAP for digital goods, so the app can't link out to Stripe Checkout from inside iOS |
+| Hosting/infra | Fly.io or Render for the API; Vercel or Cloudflare Pages for the app shell | Low ops overhead first; avoid Kubernetes complexity until there's a real reason |
 | CDN | Cloudflare | Free tier covers Phase 0 needs and stays useful at scale |
 | CI/CD | GitHub Actions (already in repo) | Extend existing `ci.yml` pattern rather than introducing a new system |
 | Observability | Sentry (errors) + Grafana Cloud or Better Stack (metrics/logs) | Managed, low setup cost, scales down in price when traffic is low |
+
+This table is the summary; the concrete deploy steps, the API gateway
+split, multiplayer mode progression, mobile track detail, and monetization
+stream breakdown all live in the companion doc, [tech-stack.md](tech-stack.md).
 
 ---
 
@@ -480,7 +491,10 @@ Goal: structured head-to-head or tournament play. Story: "As a user, I
 want to challenge a friend directly, not just compare leaderboard
 positions passively." MVP: 1v1 duel on a shared seed, async (not
 required to be simultaneous) with a result screen. Metric: duels
-completed per week.
+completed per week. Ship async duel first (no realtime infra), then live
+co-draw rooms, then — only if demand clearly asks for it — a truly
+simultaneous shared canvas (needs CRDT/Yjs, materially harder); full
+progression and tech tradeoffs in [tech-stack.md §5](tech-stack.md#5-multiplayer--live-competitive-layer).
 
 **Subscriptions & IAP**
 Goal: sustainable revenue without compromising the free creative core.
@@ -508,6 +522,16 @@ one-off cosmetic IAP. Metric: free→paid conversion rate, refund rate.
   webhooks into the `Entitlement` table — client-side purchase state is
   never trusted directly.
 - Clear, one-click cancel and data export; refund policy stated up front.
+- On mobile, IAP routes through **RevenueCat** (not Stripe directly) so
+  Apple/Google/Stripe entitlements stay unified — Apple requires native
+  IAP for any in-app digital good/subscription, so the iOS app can't link
+  out to Stripe Checkout.
+- Two later-phase revenue streams beyond subscriptions/cosmetic IAP —
+  **paid competition entry fees with a payout** and a **print-on-demand
+  marketplace** — are scoped in [tech-stack.md §7](tech-stack.md#7-monetization--earning-platform).
+  Entry-fee payouts add real money-transmission compliance surface and
+  should not ship before Phase 6; print-on-demand is a straightforward
+  Checkout + fulfillment-API integration with no inventory risk.
 
 ---
 
@@ -541,13 +565,19 @@ one-off cosmetic IAP. Metric: free→paid conversion rate, refund rate.
 |---|---|---|
 | **0 — Performance** | CDN, vendored libs, caching, service worker, web-vitals monitoring | No |
 | **1 — Platform foundation** | Auth, profile, cloud art sync (additive to local save), hosting/infra, CI/CD for backend, API skeleton | Yes — first backend |
-| **2 — Engagement** | Score model per tool, daily challenges, leaderboards (Redis-backed) | Yes |
-| **3 — Social & competitive** | Sharing with ID, follow/feed, 1v1 duels, WebSocket live updates | Yes |
-| **4 — Monetization** | Subscriptions, IAP catalog, entitlements, paywall UI, Stripe integration | Yes |
-| **5 — Scale hardening** | Load testing, autoscaling tuning, read replicas, observability maturity, cost review | Yes |
+| **2 — Monetization MVP** | Subscription + cosmetic IAP via Stripe (web only) — validate willingness to pay before investing in multiplayer/mobile | Yes |
+| **3 — Engagement & async multiplayer** | Score model per tool, daily challenges, leaderboards (Redis-backed), 1v1 async duels (no WebSocket infra needed) | Yes |
+| **4 — Live multiplayer & social** | Sharing with ID, follow/feed, live co-draw rooms, WebSocket gateway | Yes |
+| **5 — Mobile** | Capacitor wrap of the app shell + existing tools, RevenueCat IAP, app store submission | Yes |
+| **6 — Scale hardening** | Load testing, autoscaling tuning, read replicas, observability maturity, cost review; optional competition entry-fee payouts / print-on-demand marketplace once usage justifies it | Yes |
+
+This ordering — monetization validated *before* the heavier live-multiplayer
+and mobile investments — follows [tech-stack.md §8](tech-stack.md#8-suggested-order-of-operations),
+which reasons it's cheaper to learn "will anyone pay" early than after
+building live multiplayer and shipping to two app stores.
 
 Each phase should ship independently usable and behind its own feature
-flag — Phase 2 must not block on Phase 3, etc. A phase is "done" when its
+flag — Phase 3 must not block on Phase 4, etc. A phase is "done" when its
 feature's success metric (see [section 12](#12-feature-prds-lightweight))
 has a baseline measurement, not just when the code merges.
 
@@ -616,9 +646,21 @@ than guessed:
 - **Managed vs. self-hosted auth/realtime long-term**: fine to start
   managed (Clerk/Ably) for speed; revisit self-hosting only if cost or
   control becomes a real constraint at scale — don't pre-optimize.
-- **Mobile app, ever?** If yes eventually, IAP should route through
-  RevenueCat from day one instead of Stripe-only, to avoid a second
-  billing migration later.
+- **Mobile app, ever?** [tech-stack.md §6](tech-stack.md#6-mobile-app)
+  recommends starting with Track A (Capacitor wrap of the app shell,
+  ships as Phase 5) with RevenueCat IAP from day one instead of
+  Stripe-only, to avoid a second billing migration later — but *whether*
+  to invest in mobile at all is still the owner's call.
+- **Ads** — explicitly conflicts with the current "no ads inside the
+  tool" ground rule ([design.md](.claude/rules/design.md)); needs a
+  conscious policy decision, not a default, before any ad surface (even
+  one confined to a non-canvas screen) is built.
+- **Competition entry fees / payouts** — introduces money-transmission
+  compliance questions (varies by country) worth a real legal check
+  before building, regardless of how validated the rest of monetization
+  is by then.
+- **Print-on-demand partner** (Printful vs. Printify vs. others) — affects
+  margin and fulfillment regions; only relevant once Phase 6 is reached.
 - **Budget/timeline** for Phase 1 infra (managed services above have
   real monthly cost even at low traffic) — needs sign-off before
   setup checklist item 1.

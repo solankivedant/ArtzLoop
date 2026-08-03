@@ -102,7 +102,10 @@ function renderThumbnail(ctx, w, h, strokes){
 const SHAPE_DIST_FALLOFF = 0.35;  // normalized-unit mean point distance at which shape similarity bottoms out at 0
 const COLOR_DELTAE_FALLOFF = 40;  // Lab deltaE76 at which color similarity bottoms out at 0
 const SHAPE_WEIGHT = 0.7, COLOR_WEIGHT = 0.3;
-const RESAMPLE_N = 24;
+// Completion is shape-only: any color, any overall scale (already handled by
+// normalizeStrokeSet's own-bbox normalization above) is fine - only how
+// closely the drawn shape traces the target counts toward "completed".
+const COMPLETE_THRESHOLD = 90;
 
 function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
 
@@ -129,39 +132,48 @@ function centroidOf(pts){
   for (const p of pts){ sx += p[0]; sy += p[1]; }
   return [sx/pts.length, sy/pts.length];
 }
-// arc-length resample a polyline to exactly n points; degenerate (single
-// point / zero-length) strokes collapse to n copies of that one point
-function resamplePolyline(pts, n){
-  if (!pts || !pts.length) return new Array(n).fill([0, 0]);
-  if (pts.length === 1) return new Array(n).fill(pts[0]);
-  const lens = [0];
-  for (let i = 1; i < pts.length; i++)
-    lens.push(lens[i-1] + Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]));
-  const total = lens[lens.length-1];
-  if (total === 0) return new Array(n).fill(pts[0]);
+// Whole-shape comparison (Chamfer distance) rather than pairing individual
+// strokes 1:1: a freehand recreation almost never lifts the pen at the same
+// points as the original design, so two drawings that *look* the same can
+// have completely different stroke counts/boundaries. Flattening every
+// stroke's points into one cloud per drawing and matching nearest-point
+// (both directions) scores the resulting silhouette, not how the artist
+// happened to segment their pen strokes.
+const CLOUD_CAP = 400; // bound the O(n*m) nearest-neighbor cost for busy drawings
+function flattenCloud(strokes){
+  const pts = [];
+  for (const s of strokes) for (const p of s.pts) pts.push(p);
+  return pts;
+}
+function downsampleEven(pts, cap){
+  if (pts.length <= cap) return pts;
   const out = [];
-  for (let i = 0; i < n; i++){
-    const target = total*i/(n-1);
-    let seg = 1;
-    while (seg < lens.length - 1 && lens[seg] < target) seg++;
-    const segLen = lens[seg] - lens[seg-1];
-    const t = segLen > 0 ? (target - lens[seg-1])/segLen : 0;
-    const a = pts[seg-1], b = pts[seg];
-    out.push([a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t]);
-  }
+  for (let i = 0; i < cap; i++) out.push(pts[Math.floor(i * pts.length / cap)]);
   return out;
 }
-function meanPointDist(a, b){
+function chamferMeanDist(a, b){
+  if (!a.length || !b.length) return Infinity;
   let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += Math.hypot(a[i][0]-b[i][0], a[i][1]-b[i][1]);
+  for (const pa of a){
+    let best = Infinity;
+    for (const pb of b){
+      const dx = pa[0]-pb[0], dy = pa[1]-pb[1];
+      const d = dx*dx + dy*dy;
+      if (d < best) best = d;
+    }
+    sum += Math.sqrt(best);
+  }
   return sum/a.length;
 }
-function shapeSimilarity(userPts, targetPts){
-  const ru = resamplePolyline(userPts, RESAMPLE_N);
-  const rt = resamplePolyline(targetPts, RESAMPLE_N);
-  const dFwd = meanPointDist(ru, rt);
-  const dRev = meanPointDist(ru.slice().reverse(), rt);
-  return clamp(1 - Math.min(dFwd, dRev)/SHAPE_DIST_FALLOFF, 0, 1);
+// userNorm/targetNorm: arrays (parallel to their strokes) of already
+// bbox-normalized point arrays, from normalizeStrokeSet()
+function wholeShapeSimilarity(userNorm, targetNorm){
+  const userCloud = downsampleEven(userNorm.flat(), CLOUD_CAP);
+  const targetCloud = downsampleEven(targetNorm.flat(), CLOUD_CAP);
+  if (!userCloud.length || !targetCloud.length) return 0;
+  const dFwd = chamferMeanDist(userCloud, targetCloud);
+  const dRev = chamferMeanDist(targetCloud, userCloud);
+  return clamp(1 - (dFwd + dRev)/2/SHAPE_DIST_FALLOFF, 0, 1);
 }
 
 /* Lab color distance (ΔE76) for the 0.3-weighted color term */
@@ -208,30 +220,32 @@ function score(userStrokes, targetStrokes){
   userStrokes = (userStrokes || []).filter(s => s && s.pts && s.pts.length);
   targetStrokes = (targetStrokes || []).filter(s => s && s.pts && s.pts.length);
   if (!userStrokes.length || !targetStrokes.length)
-    return { overall: 0, shape: 0, color: 0, matchedCount: 0, missedCount: targetStrokes.length, extraCount: userStrokes.length };
+    return { overall: 0, shape: 0, color: 0, userStrokeCount: userStrokes.length, targetStrokeCount: targetStrokes.length };
 
   const userNorm = normalizeStrokeSet(userStrokes);
   const targetNorm = normalizeStrokeSet(targetStrokes);
+
+  // Shape score compares the two drawings as whole silhouettes (see
+  // wholeShapeSimilarity) - deliberately not tied to matching individual
+  // strokes 1:1, since how many times the artist lifted the pen shouldn't
+  // affect whether the resulting picture looks the same.
+  const shapeSim = wholeShapeSimilarity(userNorm, targetNorm);
+
+  // Color stays a per-stroke nearest-centroid comparison (informational
+  // only - it does not gate "completed", see COMPLETE_THRESHOLD below).
   const userC = userNorm.map(centroidOf);
   const targetC = targetNorm.map(centroidOf);
   const matches = greedyMatch(userC, targetC);
+  let colorSum = 0;
+  for (const [ui, ti] of matches) colorSum += colorSimilarity(userStrokes[ui].col, targetStrokes[ti].col);
+  const colorSim = matches.length ? colorSum/matches.length : 0;
 
-  let shapeSum = 0, colorSum = 0, combinedSum = 0;
-  for (const [ui, ti] of matches){
-    const shapeSim = shapeSimilarity(userNorm[ui], targetNorm[ti]);
-    const colorSim = colorSimilarity(userStrokes[ui].col, targetStrokes[ti].col);
-    shapeSum += shapeSim; colorSum += colorSim;
-    combinedSum += SHAPE_WEIGHT*shapeSim + COLOR_WEIGHT*colorSim;
-  }
-  const denom = Math.max(targetStrokes.length, userStrokes.length, 1);
-  const matchedCount = matches.length;
   return {
-    overall: clamp(combinedSum/denom, 0, 1)*100,
-    shape: matchedCount ? (shapeSum/matchedCount)*100 : 0,
-    color: matchedCount ? (colorSum/matchedCount)*100 : 0,
-    matchedCount,
-    missedCount: targetStrokes.length - matchedCount,
-    extraCount: userStrokes.length - matchedCount,
+    overall: clamp(SHAPE_WEIGHT*shapeSim + COLOR_WEIGHT*colorSim, 0, 1)*100,
+    shape: shapeSim*100,
+    color: colorSim*100,
+    userStrokeCount: userStrokes.length,
+    targetStrokeCount: targetStrokes.length,
   };
 }
 
@@ -247,9 +261,14 @@ function loadHistory(toolId){
 function saveResult(toolId, dateKey, result){
   const hist = loadHistory(toolId);
   const prev = hist[dateKey];
-  const better = !prev || result.overall > prev.overall ||
-    (result.overall === prev.overall && result.elapsedMs < prev.elapsedMs);
-  if (better) hist[dateKey] = { elapsedMs: result.elapsedMs, overall: result.overall, completedAt: Date.now() };
+  // a completed attempt always outranks a non-completed one, regardless of
+  // the raw overall number (color differences shouldn't cost a completion)
+  const better = !prev ||
+    (result.completed && !prev.completed) ||
+    (result.completed === !!prev.completed &&
+      (result.overall > prev.overall ||
+        (result.overall === prev.overall && result.elapsedMs < prev.elapsedMs)));
+  if (better) hist[dateKey] = { elapsedMs: result.elapsedMs, overall: result.overall, completed: !!result.completed, completedAt: Date.now() };
   const keys = Object.keys(hist).sort();
   while (keys.length > HISTORY_CAP_DAYS) delete hist[keys.shift()];
   try { localStorage.setItem(historyKey(toolId), JSON.stringify(hist)); } catch (e) {}
@@ -298,42 +317,73 @@ function mount(toolId, opts){
     pill.id = "challengePill";
     pill.innerHTML =
       '<span class="cpTime">0:00</span>' +
-      '<span class="cpHint">Draw your first stroke to start</span>' +
-      '<button type="button" class="btn primary cpSubmit" style="display:none">Submit</button>' +
+      '<button type="button" class="btn primary cpSubmit">Submit</button>' +
       '<button type="button" class="btn icon cpCancel" title="Cancel challenge">✕</button>';
     document.body.appendChild(pill);
   }
   const cpTime = pill.querySelector(".cpTime");
-  const cpHint = pill.querySelector(".cpHint");
   const cpSubmit = pill.querySelector(".cpSubmit");
   const cpCancel = pill.querySelector(".cpCancel");
 
+  // ---- persistent reference thumbnail (built once per page load) ----
+  // Stays visible in the opposite corner from the timer pill for the whole
+  // armed+drawing window, not just in the pre-start preview modal - a
+  // one-time glance isn't enough to recreate a multi-stroke design from
+  // memory. Square canvas, own-center geometry (see geomFor/renderThumbnail
+  // above) so the design renders evenly centered on both axes regardless of
+  // this widget's on-screen size.
+  let refPanel = document.getElementById("challengeRefPanel"), refCanvas;
+  if (!refPanel){
+    refPanel = document.createElement("div");
+    refPanel.id = "challengeRefPanel";
+    const label = document.createElement("div"); label.className = "crpLabel"; label.textContent = "Reference";
+    refCanvas = document.createElement("canvas");
+    // 190 matches the existing Target/Yours compare thumbnails elsewhere in
+    // this file - large enough for a busy multi-stroke design's line detail
+    // to actually read at a glance while drawing, not just as a silhouette
+    refCanvas.width = refCanvas.height = 190; // square: geomFor centers on w/2,h/2 evenly on both axes
+    refPanel.appendChild(refCanvas);
+    refPanel.appendChild(label);
+    document.body.appendChild(refPanel);
+  } else {
+    refCanvas = refPanel.querySelector("canvas");
+  }
+
   let armed = false, started = false, startTime = 0, rafId = null, targetDesign = null;
+
+  function refreshButtonDoneState(){
+    if (!buttonEl) return;
+    const todays = loadHistory(toolId)[todayKey()];
+    buttonEl.classList.toggle("done", !!(todays && todays.completed));
+  }
+  refreshButtonDoneState();
 
   function tick(){
     if (!started) return;
     cpTime.textContent = formatElapsed(performance.now() - startTime);
     rafId = requestAnimationFrame(tick);
   }
+  // The clock starts the moment the challenge is armed (Start Challenge
+  // clicked), not on the first stroke - "practice before you commit" isn't
+  // free thinking time here, matching the "Time: 0:03 already on the pill
+  // before I've drawn anything" expectation.
   function showPillArmed(){
-    armed = true; started = false;
+    armed = true; started = true; startTime = performance.now();
     cpTime.textContent = "0:00";
-    cpHint.style.display = ""; cpHint.textContent = "Draw your first stroke to start";
-    cpSubmit.style.display = "none";
     pill.classList.add("show");
-  }
-  function onStrokeCommitted(){
-    if (!armed || started) return;
-    started = true; startTime = performance.now();
-    cpHint.style.display = "none";
-    cpSubmit.style.display = "";
+    if (targetDesign) renderThumbnail(refCanvas.getContext("2d"), refCanvas.width, refCanvas.height, targetDesign.strokes);
+    refPanel.classList.toggle("show", !!targetDesign);
     rafId = requestAnimationFrame(tick);
   }
+  // kept as a no-op call target - apps/*/script.js notifies on every
+  // committed stroke, but the timer no longer waits on it (see showPillArmed)
+  function onStrokeCommitted(){}
   function cancelChallenge(){
     armed = false; started = false;
     if (rafId) cancelAnimationFrame(rafId);
     rafId = null;
     pill.classList.remove("show");
+    refPanel.classList.remove("show");
   }
   cpCancel.onclick = cancelChallenge;
 
@@ -343,10 +393,13 @@ function mount(toolId, opts){
     if (rafId) cancelAnimationFrame(rafId);
     rafId = null; armed = false; started = false;
     pill.classList.remove("show");
+    refPanel.classList.remove("show");
     const userStrokes = getUserStrokes();
     const result = score(userStrokes, (targetDesign && targetDesign.strokes) || []);
-    saveResult(toolId, todayKey(), { overall: result.overall, elapsedMs });
-    renderResults(result, elapsedMs, userStrokes);
+    const completed = result.shape >= COMPLETE_THRESHOLD;
+    saveResult(toolId, todayKey(), { overall: result.overall, elapsedMs, completed });
+    refreshButtonDoneState();
+    renderResults(result, elapsedMs, userStrokes, completed);
     modal.classList.add("show");
   }
   cpSubmit.onclick = doSubmit;
@@ -368,8 +421,15 @@ function mount(toolId, opts){
     targetDesign = pickForToday(pool);
     const h = document.createElement("h2"); h.textContent = "Daily Challenge";
     const sub = document.createElement("div"); sub.className = "sub";
-    sub.textContent = todayKey() + " - recreate this design freehand, then submit to see your score.";
+    sub.textContent = todayKey() + " - recreate this design freehand (any color, any size), then submit to see your score.";
     modalBody.appendChild(h); modalBody.appendChild(sub);
+    const todays = loadHistory(toolId)[todayKey()];
+    if (todays && todays.completed){
+      const done = document.createElement("div");
+      done.className = "challengeCompleteBanner done";
+      done.textContent = "✓ Already completed today (best shape-match run kept) - try again to improve it.";
+      modalBody.appendChild(done);
+    }
     const wrap = document.createElement("div"); wrap.className = "challengeThumbWrap";
     const canvas = document.createElement("canvas");
     canvas.width = 260; canvas.height = 260; canvas.className = "challengeThumb";
@@ -407,12 +467,18 @@ function mount(toolId, opts){
     modal.classList.remove("show");
     showPillArmed();
   }
-  function renderResults(result, elapsedMs, userStrokes){
+  function renderResults(result, elapsedMs, userStrokes, completed){
     clearBody();
-    const h = document.createElement("h2"); h.textContent = "Challenge Results";
+    const h = document.createElement("h2");
+    h.textContent = completed ? "Challenge Completed!" : "Challenge Results";
+    const banner = document.createElement("div");
+    banner.className = "challengeCompleteBanner" + (completed ? " done" : "");
+    banner.textContent = completed
+      ? "Shape match " + Math.round(result.shape) + "% - that clears the " + COMPLETE_THRESHOLD + "% bar. Color and overall size don't count against you."
+      : "Shape match " + Math.round(result.shape) + "% - needs " + COMPLETE_THRESHOLD + "% to complete (color and size don't count either way).";
     const sub = document.createElement("div"); sub.className = "sub";
     sub.textContent = "Time: " + formatElapsed(elapsedMs);
-    modalBody.appendChild(h); modalBody.appendChild(sub);
+    modalBody.appendChild(h); modalBody.appendChild(banner); modalBody.appendChild(sub);
 
     const row = document.createElement("div"); row.className = "challengeScoreRow";
     const item = (label, val) => {
@@ -426,10 +492,6 @@ function mount(toolId, opts){
     row.appendChild(item("Shape", result.shape));
     row.appendChild(item("Color", result.color));
     modalBody.appendChild(row);
-
-    const detail = document.createElement("div"); detail.className = "sub";
-    detail.textContent = "Matched " + result.matchedCount + " · missed " + result.missedCount + " · extra " + result.extraCount;
-    modalBody.appendChild(detail);
 
     const compare = document.createElement("div"); compare.className = "challengeCompare";
     const mkThumb = (label, strokes) => {

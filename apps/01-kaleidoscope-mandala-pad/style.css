@@ -276,6 +276,14 @@ select:hover{border-color:rgba(255,255,255,.24)}
 .challengeCompare{display:flex;gap:16px;justify-content:center;margin:14px 0 4px}
 .challengeCompareItem{text-align:center;font-size:11px;color:var(--tx2)}
 .challengeCompareItem .challengeThumb{margin-top:5px}
+/* shape-only pass/fail banner - reuses the same teal (--ac2) the header logo
+   and #challengeBtn.done already use, so "completed" reads as one language */
+.challengeCompleteBanner{font-size:12px;color:var(--tx2);background:rgba(255,255,255,.05);
+  border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin-top:2px}
+.challengeCompleteBanner.done{color:#eafffb;background:rgba(63,216,208,.16);border-color:rgba(63,216,208,.4)}
+/* persistent (not a timed flash like .saved) indicator that today's
+   challenge is already cleared, distinguishable at a glance from the icon */
+#challengeBtn.done{background:rgba(63,216,208,.22);border-color:rgba(63,216,208,.45)}
 /* floating timer pill - same toast styling/positioning approach as #resume,
    offset to its own corner so the two can never visually collide */
 #challengePill{position:fixed;top:60px;right:16px;display:none;align-items:center;gap:11px;
@@ -283,7 +291,17 @@ select:hover{border-color:rgba(255,255,255,.24)}
   padding:11px 15px;box-shadow:0 10px 34px rgba(0,0,0,.55);z-index:9}
 #challengePill.show{display:flex}
 #challengePill .cpTime{font:13px Consolas,monospace;font-weight:700;color:var(--tx);min-width:38px}
-#challengePill .cpHint{font-size:11.5px;color:var(--tx2);white-space:nowrap}
+/* persistent reference thumbnail - mirrors the pill's corner/panel styling
+   but on the opposite (left) side, visible for the whole armed+drawing
+   window so the target design isn't a one-time glance before you start.
+   190px matches the existing Target/Yours compare thumbnails so a busy
+   design's line detail is actually legible, not just a silhouette. */
+#challengeRefPanel{position:fixed;top:60px;left:16px;display:none;flex-direction:column;align-items:center;gap:6px;
+  background:rgba(21,21,33,.9);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:13px;
+  padding:9px;box-shadow:0 10px 34px rgba(0,0,0,.55);z-index:9}
+#challengeRefPanel.show{display:flex}
+#challengeRefPanel canvas{display:block;width:190px;height:190px;aspect-ratio:1/1;border-radius:9px;background:#0b0b13}
+#challengeRefPanel .crpLabel{font-size:9.5px;color:var(--tx2);text-transform:uppercase;letter-spacing:.5px}
 
 /* help modal - a deliberately light/white sheet so it reads like a document,
    distinct from the tool-grid popup */

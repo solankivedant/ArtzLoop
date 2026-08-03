@@ -4,7 +4,7 @@
  * every same-origin GET response seen at runtime gets cached automatically so
  * new tools don't need a precache list update.
  */
-const CACHE_NAME = "artzloop-v2";
+const CACHE_NAME = "artzloop-v4";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
