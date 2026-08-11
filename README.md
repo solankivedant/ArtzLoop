@@ -18,6 +18,8 @@ Open [index.html](index.html) to browse the full grid of tools.
 | 08 | Kaleidoscope photo tiler | [apps/08-kaleidoscope-photo-tiler](apps/08-kaleidoscope-photo-tiler/index.html) |
 | 09 | Snowflake generator | [apps/09-snowflake-generator](apps/09-snowflake-generator/index.html) |
 | 10 | Sacred-geometry overlay pad | [apps/10-sacred-geometry-pad](apps/10-sacred-geometry-pad/index.html) |
+| 11 | Block painting | [apps/11-block-painting](apps/11-block-painting/index.html) |
+| 12 | Coloring game | [apps/12-coloring-game](apps/12-coloring-game/index.html) |
 
 See [artzloop.md](artzloop.md) for the full tool spec and the master build prompt used to generate each one.
 

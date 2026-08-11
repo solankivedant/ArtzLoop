@@ -1,771 +1,454 @@
 
-"use strict";
-/* shared math helpers available to every tool */
-function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
-function makeNoise2D(seed){
-  const rnd=mulberry32(seed),p=new Uint8Array(512),base=[];
-  for(let i=0;i<256;i++)base.push(i);
-  for(let i=255;i>0;i--){const j=Math.floor(rnd()*(i+1));const t=base[i];base[i]=base[j];base[j]=t;}
-  for(let i=0;i<512;i++)p[i]=base[i&255];
-  const g=new Float32Array(256);for(let i=0;i<256;i++)g[i]=rnd();
-  const f=t=>t*t*(3-2*t);
-  return function(x,y){
-    const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
-    const aa=g[p[(p[xi&255]+yi)&255]],ba=g[p[(p[(xi+1)&255]+yi)&255]],
-          ab=g[p[(p[xi&255]+yi+1)&255]],bb=g[p[(p[(xi+1)&255]+yi+1)&255]];
-    const u=f(xf),v=f(yf),top=aa+(ba-aa)*u;
-    return top+(ab+(bb-ab)*u-top)*v;
-  };
-}
-function hsl(h,s,l,a){return "hsla("+((h%360)+360)%360+","+s+"%,"+l+"%,"+(a===undefined?1:a)+")";}
-function hslToRgb(h,s,l){
-  h=(((h%360)+360)%360)/360;s/=100;l/=100;
-  const q=l<.5?l*(1+s):l+s-l*s,p=2*l-q,
-  f=t=>{t=((t%1)+1)%1;if(t<1/6)return p+(q-p)*6*t;if(t<1/2)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p;};
-  return [Math.round(f(h+1/3)*255),Math.round(f(h)*255),Math.round(f(h-1/3)*255)];
-}
-function hexToRgb(hex){const n=parseInt(hex.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255];}
-
-/* #01 Kaleidoscope Mandala Pad - strokes mirror N-fold around the center.
- * Eraser modes: "Trim this piece" / "Trim all pieces" rub out just the
- * segments under the cursor (one copy / every copy); "Whole piece" removes
- * the entire symmetric copy you touch; "Whole stroke" removes the stroke
- * and all of its copies at once. */
+/* #12 Coloring Book - a calm digital coloring book. Five procedurally-built
+ * outlined templates (mandala, flower garden, abstract waves, geometric
+ * animal, cosmic pattern); tap any enclosed region to fill it with the
+ * current color and fill style. Region geometry is built with deterministic
+ * math only (fixed constants/loops, never Math.random()) so the same
+ * template always regenerates pixel-identical regions after a save/reload -
+ * that's what lets restored fills land back on the correct region. Fills are
+ * kept per-template so switching templates never discards other work. */
 (function(){
-let api, live = null, strokes = [], fills = [], cursor = null, recolorHover = null;
-let selection = { strokes:new Set(), fills:new Set() }, rotBase = null, selBBox = null;
-// current angular reference frame for the whole mandala - since rotating
-// always spins the entire piece (selection is always everything), every
-// existing stroke/fill's own .rot stays in lockstep with this value; new
-// strokes/fills need to start at this same angle too, or their mirror axes
-// come out misaligned with a mandala that's already been spun.
-let globalRot = 0, curRotDelta = 0;
-function geom(){ return { cx:api.W/2, cy:api.H/2, sc:Math.min(api.W,api.H)/2 }; }
-// converts a raw cursor point (in the mandala's current, possibly-spun
-// visual frame) into the canonical/pre-spin frame every stroke's .pts are
-// stored in - i.e. the inverse of the rotation drawCopySeg re-applies via
-// s.rot. Storing the compensated point (instead of the raw one) alongside
-// rot:globalRot is what lets a brand-new stroke land exactly under the
-// cursor AND mirror about the mandala's current (already-rotated) axis at
-// the same time - storing the raw point with rot:globalRot instead gets the
-// mirror axis right but drags the whole stroke away from the cursor by
-// globalRot; storing it with rot:0 instead keeps it under the cursor but
-// mirrors about the stale, pre-spin axis instead of the current one.
-function toCanonical(n){
-  if (!globalRot) return n;
-  const co = Math.cos(globalRot), si = Math.sin(globalRot);
-  return [n[0]*co + n[1]*si, n[1]*co - n[0]*si];
-}
-/* grow the world so every mirrored copy of a point fits - copies landing
- * far from the cursor were getting clipped at the old world edge */
-function growForPoint(n, sym, mir, rot){
-  const g = geom();
-  for (let k = 0; k < sym; k++)
-    for (const f of (mir ? [1,-1] : [1])){
-      const an = Math.PI*2*k/sym + (rot||0), co = Math.cos(an), si = Math.sin(an);
-      api.grow(g.cx + (n[0]*co - n[1]*f*si)*g.sc, g.cy + (n[0]*si + n[1]*f*co)*g.sc);
-    }
-}
-function growForAll(){
-  let m = 0;
-  for (const s of strokes)
-    for (const p of s.pts) m = Math.max(m, Math.hypot(p[0], p[1]) + s.size);
-  if (!m) return;
-  const g = geom();
-  api.grow(g.cx - m*g.sc, g.cy - m*g.sc);
-  api.grow(g.cx + m*g.sc, g.cy + m*g.sc);
-}
-function copyKey(k, f){ return k*2 + (f < 0 ? 1 : 0); }
-// runtime Sets mirroring the serializable cut arrays
-function sets(s){
-  if (!s._ca) s._ca = new Set(s.cutAll || []);
-  if (!s._c){
-    s._c = {};
-    if (s.cuts) for (const k in s.cuts) s._c[k] = new Set(s.cuts[k]);
-  }
-  return s;
-}
-function isCut(s, key, i){
-  sets(s);
-  return s._ca.has(i) || (s._c[key] && s._c[key].has(i));
-}
-function segCount(s){ return Math.max(1, s.pts.length - 1); }
 
-function drawCopySeg(c, s, k, f, a, b){
-  const g = geom();
-  // the rotation offset is added AFTER the mirror flip (f) is applied below,
-  // so it rigidly spins both the direct and the mirrored copies the same way -
-  // adding it to the point coordinates instead would spin the mirrored half
-  // backwards, since a reflection reverses the sense of rotation.
-  const an = Math.PI*2*k/s.sym + (s.rot||0), co = Math.cos(an), si = Math.sin(an);
-  c.beginPath();
-  c.moveTo(g.cx + (a[0]*co - a[1]*f*si)*g.sc, g.cy + (a[0]*si + a[1]*f*co)*g.sc);
-  c.lineTo(g.cx + (b[0]*co - b[1]*f*si)*g.sc, g.cy + (b[0]*si + b[1]*f*co)*g.sc);
-  c.stroke();
+/* ---- small color helpers (hex <-> rgb <-> hsl) for the gradient / crayon
+ * fill styles - gradient tint and crayon speckle shading are both derived
+ * from the picked color via an HSL lightness shift, never a second hardcoded
+ * color. ------------------------------------------------------------------ */
+function hexToRgb(hex){ const n = parseInt(hex.slice(1), 16); return [(n>>16)&255, (n>>8)&255, n&255]; }
+function rgbToHex(r, g, b){
+  return "#" + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
 }
-function liveSeg(a, b, s){ // used while drawing - no cuts yet
-  const c = api.ctx, g = geom();
-  c.strokeStyle = s.col;
-  c.lineWidth = Math.max(.5, s.size * g.sc);
-  c.lineCap = "round"; c.lineJoin = "round";
-  for (let k = 0; k < s.sym; k++)
-    for (const f of (s.mir ? [1,-1] : [1]))
-      drawCopySeg(c, s, k, f, a, b);
-}
-function drawWholeStroke(s){
-  const c = api.ctx, g = geom();
-  c.lineWidth = Math.max(.5, s.size * g.sc);
-  c.lineCap = "round"; c.lineJoin = "round";
-  const dot = s.pts.length === 1;
-  for (let k = 0; k < s.sym; k++){
-    for (const f of (s.mir ? [1,-1] : [1])){
-      const key = copyKey(k, f);
-      if (s.hidden && s.hidden.indexOf(key) >= 0) continue; // copy erased whole
-      // per-copy recolor overrides the stroke's shared color for just this
-      // one symmetric copy, leaving every other copy on the original color
-      c.strokeStyle = (s.colOverride && s.colOverride[key]) || s.col;
-      if (dot){
-        if (!isCut(s, key, 0)) drawCopySeg(c, s, k, f, s.pts[0], s.pts[0]);
-        continue;
-      }
-      for (let i = 1; i < s.pts.length; i++)
-        if (!isCut(s, key, i)) drawCopySeg(c, s, k, f, s.pts[i-1], s.pts[i]);
-    }
+function rgbToHsl(r, g, b){
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  let h = 0, s = 0;
+  if (mx !== mn){
+    const d = mx - mn;
+    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    if (mx === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6;
   }
+  return [h * 360, s * 100, l * 100];
 }
-function redraw(skipFills){
-  growForAll();
-  api.clearWorld();
-  for (const s of strokes) drawWholeStroke(s);
-  if (!skipFills) applyFills(); // flood-filling is the expensive part - skip it for interactive drag previews
+function hslToRgb(h, s, l){
+  h = (((h % 360) + 360) % 360) / 360; s = Math.max(0, Math.min(100, s)) / 100; l = Math.max(0, Math.min(100, l)) / 100;
+  if (s === 0){ const v = Math.round(l * 255); return [v, v, v]; }
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  return [Math.round(hue2rgb(p, q, h + 1/3) * 255), Math.round(hue2rgb(p, q, h) * 255), Math.round(hue2rgb(p, q, h - 1/3) * 255)];
 }
-// world-logical point -> backing-store pixel coords, via the world ctx's own
-// transform (scale + pan baked in) so we don't need to know wdpr/wx0/wy0
-function worldToBacking(wx, wy){
-  const m = api.ctx.getTransform();
-  return [m.a*wx + m.c*wy + m.e, m.b*wx + m.d*wy + m.f];
+function hslToHex(h, s, l){ return rgbToHex.apply(null, hslToRgb(h, s, l)); }
+function shiftLightness(hex, deltaL){
+  const [r, g, b] = hexToRgb(hex);
+  const [h, s, l] = rgbToHsl(r, g, b);
+  return hslToHex(h, s, l + deltaL);
 }
-// paint-bucket flood fill: samples the already-rendered raster (strokes are
-// the boundaries) and replaces the contiguous region under the seed point.
-// Capped to a window around the seed and aborted if the fill reaches that
-// window's edge - on this infinite/growable canvas an "open" region has no
-// natural bound, so we no-op rather than paint a fake hard edge or
-// flood-fill an unbounded area.
-const FILL_WALL = 40;   // alpha at/above this is "ink" - always a hard stop
-const FILL_TOL = 30;    // color tolerance used only when re-filling an already-painted region
-const FILL_WIN = 1100;
-const FILL_CENTER_EPS = 4; // px radius (backing space) below which angle-around-center is noise, not signal
-function normAngle(a){ // -> [-PI, PI)
-  a = a % (Math.PI*2);
-  if (a >= Math.PI) a -= Math.PI*2;
-  if (a < -Math.PI) a += Math.PI*2;
-  return a;
-}
-// confines a flood fill to the mandala wedge (symmetric sector) it was seeded
-// in: `wedge` gives the sector's center axis (in the same backing-pixel angle
-// space as bx/by) and fold count, in the same terms applyFills() used to place
-// this specific copy. Hand-drawn strokes almost never meet pixel-perfectly at
-// the seam between adjacent copies, so the "background" is one contiguous
-// region spanning every wedge - without this, a fill seeded in one wedge's
-// pocket flows straight through that seam gap into its neighbors, then theirs,
-// etc, no matter how large the connected region turns out to be.
-function makeWedgeTest(wedge, bx, by){
-  if (!wedge || wedge.sym <= 1) return null;
-  const { cx, cy, sym, axis, mir } = wedge;
-  const half = Math.PI / sym;
-  const seedR = Math.hypot(bx - cx, by - cy);
-  if (seedR < FILL_CENTER_EPS) return null; // seed itself is too close to center to have a meaningful angle
-  // this copy's own true position - the wedge is centered here, not on `axis`
-  // (axis is only the shared mirror-reflection line, constant across every k;
-  // using it as the wedge center made the bounds check compare the seed's
-  // absolute angle against a fixed 0 deg reference instead of its own copy,
-  // so any fill seeded more than half a wedge away from absolute angle 0
-  // excluded itself on the very first pixel and silently painted nothing)
-  const seedAngle = Math.atan2(by - cy, bx - cx);
-  const seedDelta = normAngle(seedAngle - axis); // seed's side of the mirror line, for the mir check below
-  return (x, y) => {
-    const dx = x - cx, dy = y - cy;
-    if (Math.hypot(dx, dy) < FILL_CENTER_EPS) return true; // never exclude the near-center hub itself
-    const angle = Math.atan2(dy, dx);
-    if (Math.abs(normAngle(angle - seedAngle)) > half + 1e-6) return false; // different fold index than the seed
-    if (mir){
-      const delta = normAngle(angle - axis);
-      if (Math.sign(delta) !== Math.sign(seedDelta) && Math.abs(delta) > 1e-3 && Math.abs(seedDelta) > 1e-3) return false; // wrong mirror half
-    }
-    return true;
+// deterministic PRNG + string hash - used only for the crayon speckle
+// texture's dot placement (seeded per region id so the same region always
+// speckles the same way), never for region geometry itself.
+function mulberry32(seed){
+  return function(){
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
   };
 }
-function floodFillAt(bx, by, hexColor, wedge){
-  const ctx = api.ctx, cw = api.world.width, ch = api.world.height;
-  bx = Math.round(bx); by = Math.round(by);
-  if (bx < 0 || by < 0 || bx >= cw || by >= ch) return;
-  const x0 = Math.max(0, bx - FILL_WIN), y0 = Math.max(0, by - FILL_WIN);
-  const x1 = Math.min(cw, bx + FILL_WIN), y1 = Math.min(ch, by + FILL_WIN);
-  const ww = x1 - x0, hh = y1 - y0;
-  if (ww <= 0 || hh <= 0) return;
-  const img = ctx.getImageData(x0, y0, ww, hh);
-  const d = img.data;
-  const sx = bx - x0, sy = by - y0, si = (sy*ww + sx)*4;
-  const tr = d[si], tg = d[si+1], tb = d[si+2], ta = d[si+3];
-  const [fr, fg, fb] = hexToRgb(hexColor);
-  const seedIsInk = ta >= FILL_WALL;
-  if (seedIsInk && Math.abs(tr-fr) <= 2 && Math.abs(tg-fg) <= 2 && Math.abs(tb-fb) <= 2 && ta >= 253) return; // already this color
-  // background (transparent-ish) seeds flow through anything else background-ish and
-  // stop dead at the first opaque-enough pixel - a firm alpha wall, not a color-distance
-  // guess, so the fill hugs the ink's antialiased edge instead of eating into it unevenly.
-  // an ink-colored seed (clicked on an already-filled/painted pixel) only re-spreads across
-  // pixels matching that same painted color, so it can't leak past a differently colored line.
-  const match = seedIsInk
-    ? (i) => d[i+3] >= FILL_WALL && Math.abs(d[i]-tr) <= FILL_TOL && Math.abs(d[i+1]-tg) <= FILL_TOL && Math.abs(d[i+2]-tb) <= FILL_TOL
-    : (i) => d[i+3] < FILL_WALL;
-  const inWedge = makeWedgeTest(wedge, bx, by); // null = no wedge constraint (sym<=1, or seed too near center)
-  const seen = new Uint8Array(ww*hh);
-  const stack = [sx, sy];
-  let touchedEdge = false;
-  while (stack.length){
-    const y = stack.pop(), x = stack.pop();
-    if (x < 0 || y < 0 || x >= ww || y >= hh) continue;
-    const idx = y*ww + x;
-    if (seen[idx]) continue;
-    const i = idx*4;
-    if (!match(i)) continue;
-    seen[idx] = 1; // mark visited even if wedge-excluded below, so we don't re-test it from every neighbor
-    if (inWedge && !inWedge(x + x0, y + y0)) continue;
-    if (x === 0 || y === 0 || x === ww-1 || y === hh-1) touchedEdge = true;
-    d[i] = fr; d[i+1] = fg; d[i+2] = fb; d[i+3] = 255;
-    stack.push(x+1, y, x-1, y, x, y+1, x, y-1);
-  }
-  if (touchedEdge) return;
-  ctx.putImageData(img, x0, y0);
+function hashStr(s){
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
 }
-// read-only sibling of floodFillAt, used to erase a fill: traces the same
-// connected same-color region under the cursor (without painting it) so the
-// eraser can tell which fill produced whatever's under the cursor, no
-// matter how far the click lands from that fill's original seed point.
-function floodTraceRegion(bx, by){
-  const ctx = api.ctx, cw = api.world.width, ch = api.world.height;
-  bx = Math.round(bx); by = Math.round(by);
-  if (bx < 0 || by < 0 || bx >= cw || by >= ch) return null;
-  const x0 = Math.max(0, bx - FILL_WIN), y0 = Math.max(0, by - FILL_WIN);
-  const x1 = Math.min(cw, bx + FILL_WIN), y1 = Math.min(ch, by + FILL_WIN);
-  const ww = x1 - x0, hh = y1 - y0;
-  if (ww <= 0 || hh <= 0) return null;
-  const img = ctx.getImageData(x0, y0, ww, hh);
-  const d = img.data;
-  const sx = bx - x0, sy = by - y0, si = (sy*ww + sx)*4;
-  const tr = d[si], tg = d[si+1], tb = d[si+2], ta = d[si+3];
-  if (ta < FILL_WALL) return null; // clicked on bare background - nothing painted to erase
-  const match = (i) => d[i+3] >= FILL_WALL && Math.abs(d[i]-tr) <= FILL_TOL &&
-    Math.abs(d[i+1]-tg) <= FILL_TOL && Math.abs(d[i+2]-tb) <= FILL_TOL;
-  const seen = new Uint8Array(ww*hh);
-  const stack = [sx, sy];
-  let touchedEdge = false;
-  while (stack.length){
-    const y = stack.pop(), x = stack.pop();
-    if (x < 0 || y < 0 || x >= ww || y >= hh) continue;
-    const idx = y*ww + x;
-    if (seen[idx]) continue;
-    const i = idx*4;
-    if (!match(i)) continue;
-    seen[idx] = 1;
-    if (x === 0 || y === 0 || x === ww-1 || y === hh-1) touchedEdge = true;
-    stack.push(x+1, y, x-1, y, x, y+1, x, y-1);
-  }
-  if (touchedEdge) return null; // region isn't bounded within our window - same safety rule as placing a fill
-  return {
-    contains(px, py){
-      const lx = Math.round(px) - x0, ly = Math.round(py) - y0;
-      return lx >= 0 && ly >= 0 && lx < ww && ly < hh && !!seen[ly*ww + lx];
-    },
-  };
+
+/* ---- shape builders - every one returns { path:Path2D, bbox } in absolute
+ * world-pixel coordinates. bbox is tracked alongside the path (rather than
+ * derived from it) since Path2D exposes no bounding-box query, and the
+ * gradient/crayon fill styles need one. ----------------------------------- */
+function shapeCircle(cx, cy, r){
+  const p = new Path2D();
+  p.arc(cx, cy, r, 0, Math.PI * 2);
+  p.closePath();
+  return { path:p, bbox:{ x0:cx-r, y0:cy-r, x1:cx+r, y1:cy+r } };
 }
-// applies a single fill entry's flood fill (all of its symmetric copies) onto
-// whatever is currently rendered in the world raster. Shared by applyFills()
-// (full replay, used when the raster itself was just rebuilt from scratch)
-// and the fill tool's pointer-down handler (incremental: called directly on
-// an already-correct raster right after pushing exactly one new fill, so we
-// can skip the full clear+strokes+prior-fills replay redraw() would do).
-function applyOneFill(f){
-  const g = geom();
-  // seed's own angle is compared against this same center, transformed
-  // through the identical worldToBacking map, so panning/zooming can't
-  // skew the angle comparison even though it moves both points together
-  const [cxB, cyB] = worldToBacking(g.cx, g.cy);
-  for (let k = 0; k < f.sym; k++){
-    for (const ff of (f.mir ? [1,-1] : [1])){
-      if (f.hidden && f.hidden.indexOf(copyKey(k, ff)) >= 0) continue; // this copy was erased
-      const an = Math.PI*2*k/f.sym + (f.rot||0), co = Math.cos(an), si = Math.sin(an);
-      const wx = g.cx + (f.pt[0]*co - f.pt[1]*ff*si)*g.sc;
-      const wy = g.cy + (f.pt[0]*si + f.pt[1]*ff*co)*g.sc;
-      const [bx, by] = worldToBacking(wx, wy);
-      const key = copyKey(k, ff);
-      const wedge = { cx:cxB, cy:cyB, sym:f.sym, axis:an, mir:f.mir };
-      floodFillAt(bx, by, (f.colOverride && f.colOverride[key]) || f.col, wedge);
+function shapePolygon(pts){
+  const p = new Path2D();
+  p.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) p.lineTo(pts[i][0], pts[i][1]);
+  p.closePath();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of pts){ if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  return { path:p, bbox:{ x0, y0, x1, y1 } };
+}
+function shapeTriangle(a, b, c){ return shapePolygon([a, b, c]); }
+// a symmetric lens/petal shape between radius r0 and r1 at a given angle,
+// halfW wide (radians) - reused for mandala lobes and flower petals/leaves.
+function shapePetal(cx, cy, angle, r0, r1, halfW){
+  const p = new Path2D();
+  const p0 = [cx + Math.cos(angle)*r0, cy + Math.sin(angle)*r0];
+  const pTip = [cx + Math.cos(angle)*r1, cy + Math.sin(angle)*r1];
+  const rc1 = r0 + (r1-r0)*0.32, rc2 = r0 + (r1-r0)*0.80;
+  const aL1 = angle - halfW, aL2 = angle - halfW*0.5, aR1 = angle + halfW*0.5, aR2 = angle + halfW;
+  const cL1 = [cx + Math.cos(aL1)*rc1, cy + Math.sin(aL1)*rc1];
+  const cL2 = [cx + Math.cos(aL2)*rc2, cy + Math.sin(aL2)*rc2];
+  const cR1 = [cx + Math.cos(aR1)*rc2, cy + Math.sin(aR1)*rc2];
+  const cR2 = [cx + Math.cos(aR2)*rc1, cy + Math.sin(aR2)*rc1];
+  p.moveTo(p0[0], p0[1]);
+  p.bezierCurveTo(cL1[0], cL1[1], cL2[0], cL2[1], pTip[0], pTip[1]);
+  p.bezierCurveTo(cR1[0], cR1[1], cR2[0], cR2[1], p0[0], p0[1]);
+  p.closePath();
+  return { path:p, bbox:{ x0:cx-r1, y0:cy-r1, x1:cx+r1, y1:cy+r1 } };
+}
+// full annulus (ring) via two nested circles - needs "evenodd" to punch the hole.
+function shapeAnnulus(cx, cy, rOuter, rInner){
+  const p = new Path2D();
+  p.arc(cx, cy, rOuter, 0, Math.PI * 2);
+  p.moveTo(cx + rInner, cy);
+  p.arc(cx, cy, rInner, 0, Math.PI * 2, true);
+  p.closePath();
+  return { path:p, bbox:{ x0:cx-rOuter, y0:cy-rOuter, x1:cx+rOuter, y1:cy+rOuter } };
+}
+// one continuous half of an elliptical ring (a0..a1), e.g. the front or back
+// half of a Saturn-style planet ring - single loop, plain "nonzero" is fine.
+function shapeEllipseHalfRing(cx, cy, rxO, ryO, rxI, ryI, a0, a1){
+  const p = new Path2D();
+  p.ellipse(cx, cy, rxO, ryO, 0, a0, a1, false);
+  p.ellipse(cx, cy, rxI, ryI, 0, a1, a0, true);
+  p.closePath();
+  return { path:p, bbox:{ x0:cx-rxO, y0:cy-ryO, x1:cx+rxO, y1:cy+ryO } };
+}
+function shapeStar(cx, cy, rOuter, rInner, points, rot){
+  const p = new Path2D(), n = points * 2;
+  for (let i = 0; i < n; i++){
+    const r = i % 2 === 0 ? rOuter : rInner, a = rot + i * Math.PI / points;
+    const x = cx + Math.cos(a)*r, y = cy + Math.sin(a)*r;
+    if (i === 0) p.moveTo(x, y); else p.lineTo(x, y);
+  }
+  p.closePath();
+  return { path:p, bbox:{ x0:cx-rOuter, y0:cy-rOuter, x1:cx+rOuter, y1:cy+rOuter } };
+}
+// an organic nebula/cloud blob - a closed polygon whose radius is perturbed
+// by a fixed sum of sine harmonics (deterministic, not Math.random()).
+function shapeBlob(cx, cy, baseR, phase){
+  const N = 26, pts = [];
+  for (let i = 0; i < N; i++){
+    const t = i / N, a = t * Math.PI * 2;
+    const r = baseR * (1 + 0.22*Math.sin(3*a + phase) + 0.11*Math.sin(7*a + phase*1.6));
+    pts.push([cx + Math.cos(a)*r, cy + Math.sin(a)*r]);
+  }
+  // smooth closed spline through the points (quadratic-through-midpoints)
+  // rather than straight polygon edges, so it reads as a soft cloud/blob
+  // instead of a jagged rock.
+  const p = new Path2D();
+  const mid = (a, b) => [(a[0]+b[0])/2, (a[1]+b[1])/2];
+  const m0 = mid(pts[N-1], pts[0]);
+  p.moveTo(m0[0], m0[1]);
+  for (let i = 0; i < N; i++){
+    const cur = pts[i], nxt = pts[(i+1)%N], m = mid(cur, nxt);
+    p.quadraticCurveTo(cur[0], cur[1], m[0], m[1]);
+  }
+  p.closePath();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of pts){ if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  return { path:p, bbox:{ x0, y0, x1, y1 } };
+}
+function reg(id, shape, fillRule){
+  return { id, path:shape.path, bbox:shape.bbox, fillRule: fillRule || "nonzero" };
+}
+
+/* ---- the 5 templates - each returns an array of regions built purely from
+ * api.W/api.H and fixed constants. Order matters: later entries paint (and
+ * hit-test) on top of earlier ones, exactly like stacked vector objects. --- */
+function buildMandala(){
+  const cx = api.W/2, cy = api.H/2, sc = Math.min(api.W, api.H)/2;
+  const regions = [reg("center", shapeCircle(cx, cy, 0.11*sc))];
+  const rings = [
+    { r0:0.15, r1:0.34, fold:10 },
+    { r0:0.37, r1:0.60, fold:12 },
+    { r0:0.63, r1:0.90, fold:8  },
+  ];
+  rings.forEach((ring, ri) => {
+    const halfW = (Math.PI/ring.fold) * 0.40;
+    for (let k = 0; k < ring.fold; k++){
+      const angle = -Math.PI/2 + k * (Math.PI*2/ring.fold);
+      regions.push(reg(`ring${ri}_${k}`, shapePetal(cx, cy, angle, ring.r0*sc, ring.r1*sc, halfW)));
     }
+  });
+  return regions;
+}
+function buildFlowers(){
+  const W = api.W, H = api.H, regions = [];
+  const horizon = H * 0.74;
+  regions.push(reg("sky", shapePolygon([[0,0],[W,0],[W,horizon],[0,horizon]])));
+  regions.push(reg("ground", shapePolygon([[0,horizon],[W,horizon],[W,H],[0,H]])));
+  const flowerXs = [0.20, 0.5, 0.80];
+  const headY = H * 0.40, petalR = Math.min(W, H) * 0.11;
+  flowerXs.forEach((fx, fi) => {
+    const x = fx * W;
+    const stemTop = headY + petalR*0.55, stemBot = horizon + H*0.02;
+    const hw = Math.max(2, W*0.006);
+    regions.push(reg(`stem${fi}`, shapePolygon([[x-hw,stemTop],[x+hw,stemTop],[x+hw,stemBot],[x-hw,stemBot]])));
+    const leafY = stemTop + (stemBot - stemTop) * 0.42;
+    regions.push(reg(`leafL${fi}`, shapePetal(x, leafY, Math.PI*0.78, 0, petalR*0.75, 0.55)));
+    regions.push(reg(`leafR${fi}`, shapePetal(x, leafY, Math.PI*0.22, 0, petalR*0.75, 0.55)));
+    for (let pk = 0; pk < 6; pk++){
+      const angle = pk * (Math.PI/3);
+      regions.push(reg(`petal${fi}_${pk}`, shapePetal(x, headY, angle, petalR*0.18, petalR, 0.46)));
+    }
+    regions.push(reg(`centerFlower${fi}`, shapeCircle(x, headY, petalR*0.30)));
+  });
+  return regions;
+}
+function buildWaves(){
+  const W = api.W, H = api.H, regions = [];
+  const bands = [
+    { y:0.26, amp:0.045, freq:1.30, phase:0.4, thick:0.085 },
+    { y:0.42, amp:0.060, freq:0.90, phase:2.0, thick:0.110 },
+    { y:0.58, amp:0.050, freq:1.60, phase:3.3, thick:0.095 },
+    { y:0.75, amp:0.040, freq:1.15, phase:5.1, thick:0.080 },
+  ];
+  const segs = 6, steps = 8;
+  bands.forEach((band, bi) => {
+    const top = xf => (band.y + band.amp * Math.sin(Math.PI*2*band.freq*xf + band.phase)) * H;
+    const bot = xf => top(xf) + band.thick * H;
+    for (let si = 0; si < segs; si++){
+      const x0 = si/segs, x1 = (si+1)/segs, pts = [];
+      for (let s = 0; s <= steps; s++){ const xf = x0 + (x1-x0)*s/steps; pts.push([xf*W, top(xf)]); }
+      for (let s = steps; s >= 0; s--){ const xf = x0 + (x1-x0)*s/steps; pts.push([xf*W, bot(xf)]); }
+      regions.push(reg(`band${bi}_${si}`, shapePolygon(pts)));
+    }
+  });
+  return regions;
+}
+// low-poly faceted animal head (fox-like: two pointed ears + a snout bump).
+// A fan of triangles from a single center point to N boundary points is
+// trivially gapless and non-overlapping, so the silhouette profile can be
+// any deterministic radius-per-angle function without risking bad geometry.
+function buildAnimal(){
+  const W = api.W, H = api.H, regions = [];
+  const S = Math.min(W, H) * 0.42, cx = W/2, cy = H/2 + S*0.10;
+  const N = 24;
+  const bumps = [ { c:0.10, w:0.045, amp:0.55 }, { c:0.90, w:0.045, amp:0.55 }, { c:0.50, w:0.09, amp:0.30 } ];
+  const circDist = (t, c) => { const d = Math.abs(t - c); return Math.min(d, 1 - d); };
+  const radiusAt = t => {
+    let r = 1;
+    for (const b of bumps){ const d = circDist(t, b.c); const v = Math.max(0, 1 - d/b.w); r += b.amp * v*v*(3-2*v); }
+    return Math.max(0.3, r) * S;
+  };
+  const pts = [];
+  for (let i = 0; i < N; i++){
+    const t = i/N, a = -Math.PI/2 + t*Math.PI*2, r = radiusAt(t);
+    pts.push([cx + Math.cos(a)*r, cy + Math.sin(a)*r]);
   }
+  for (let i = 0; i < N; i++)
+    regions.push(reg(`facet${i}`, shapeTriangle([cx,cy], pts[i], pts[(i+1)%N])));
+  const eyeY = cy - S*0.06, eyeDX = S*0.22, eyeR = S*0.075;
+  regions.push(reg("eyeL", shapeCircle(cx-eyeDX, eyeY, eyeR)));
+  regions.push(reg("eyeR", shapeCircle(cx+eyeDX, eyeY, eyeR)));
+  const noseY = cy + S*0.40;
+  regions.push(reg("nose", shapeTriangle([cx-S*0.09,noseY],[cx+S*0.09,noseY],[cx,noseY+S*0.14])));
+  return regions;
 }
-function applyFills(){
-  for (const f of fills) applyOneFill(f);
-}
-function distToSeg(px, py, ax, ay, bx, by){
-  const dx = bx-ax, dy = by-ay;
-  const len2 = dx*dx + dy*dy;
-  let t = len2 ? ((px-ax)*dx + (py-ay)*dy)/len2 : 0;
-  t = Math.max(0, Math.min(1, t));
-  return Math.hypot(px - (ax + dx*t), py - (ay + dy*t));
-}
-// segment indices of copy (k, f) touched by the cursor (normalized coords)
-function copySegHits(s, k, f, nx, ny, rad){
-  const an = Math.PI*2*k/s.sym + (s.rot||0), co = Math.cos(an), si = Math.sin(an);
-  const rx = nx*co + ny*si, ry = (-nx*si + ny*co)*f; // cursor in base space
-  const thr = rad + s.size/2, hits = [], pts = s.pts;
-  if (pts.length === 1){
-    if (Math.hypot(rx-pts[0][0], ry-pts[0][1]) < thr) hits.push(0);
-    return hits;
+function buildCosmic(){
+  const W = api.W, H = api.H, regions = [], m = Math.min(W, H);
+  const ocx = W*0.5, ocy = H*0.56;
+  regions.push(reg("orbit0", shapeAnnulus(ocx, ocy, m*0.46, m*0.435), "evenodd"));
+  regions.push(reg("orbit1", shapeAnnulus(ocx, ocy, m*0.34, m*0.325), "evenodd"));
+  regions.push(reg("nebula0", shapeBlob(W*0.16, H*0.58, m*0.10, 0.6)));
+  regions.push(reg("nebula1", shapeBlob(W*0.84, H*0.78, m*0.12, 2.7)));
+  const stars = [
+    [0.08,0.14,0.020,0.2], [0.92,0.10,0.016,1.1], [0.16,0.86,0.022,2.0],
+    [0.74,0.90,0.017,2.9], [0.46,0.08,0.014,3.6], [0.95,0.52,0.019,4.4],
+  ];
+  stars.forEach(([xf,yf,rf,rot], si) => regions.push(reg(`star${si}`, shapeStar(xf*W, yf*H, rf*m, rf*m*0.42, 5, rot))));
+  { // small planet, upper-left
+    const px = W*0.22, py = H*0.26, pr = m*0.075;
+    regions.push(reg("p0_c", shapeCircle(px, py, pr*0.55)));
+    regions.push(reg("p0_r1", shapeAnnulus(px, py, pr, pr*0.55), "evenodd"));
   }
-  for (let i = 1; i < pts.length; i++)
-    if (!isCut(s, copyKey(k, f), i) &&
-        distToSeg(rx, ry, pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1]) < thr)
-      hits.push(i);
-  return hits;
+  { // large ringed planet
+    const px = W*0.62, py = H*0.60, pr = m*0.145;
+    regions.push(reg("p1_ringBack", shapeEllipseHalfRing(px, py, pr*1.9, pr*0.5, pr*1.25, pr*0.33, 0, Math.PI)));
+    regions.push(reg("p1_c", shapeCircle(px, py, pr*0.4)));
+    regions.push(reg("p1_r1", shapeAnnulus(px, py, pr*0.7, pr*0.4), "evenodd"));
+    regions.push(reg("p1_r2", shapeAnnulus(px, py, pr, pr*0.7), "evenodd"));
+    regions.push(reg("p1_ringFront", shapeEllipseHalfRing(px, py, pr*1.9, pr*0.5, pr*1.25, pr*0.33, Math.PI, Math.PI*2)));
+  }
+  { // small planet, upper-right
+    const px = W*0.86, py = H*0.20, pr = m*0.055;
+    regions.push(reg("p2_c", shapeCircle(px, py, pr*0.5)));
+    regions.push(reg("p2_r1", shapeAnnulus(px, py, pr, pr*0.5), "evenodd"));
+  }
+  return regions;
 }
-function addCuts(s, key, idxs, everyCopy){
-  sets(s);
-  if (everyCopy){
-    s.cutAll = s.cutAll || [];
-    for (const i of idxs) if (!s._ca.has(i)){ s._ca.add(i); s.cutAll.push(i); }
+function buildRegionsFor(tpl){
+  if (tpl === "flowers") return buildFlowers();
+  if (tpl === "waves") return buildWaves();
+  if (tpl === "animal") return buildAnimal();
+  if (tpl === "cosmic") return buildCosmic();
+  return buildMandala();
+}
+
+/* ---- fill styles + outline ---------------------------------------------- */
+function paintFill(ctx, region, entry){
+  const b = region.bbox;
+  if (entry.style === "gradient"){
+    const [h, s, l] = rgbToHsl.apply(null, hexToRgb(entry.color));
+    const light = hslToHex(h, s, Math.min(94, l + 20));
+    const dark = hslToHex(h, s, Math.max(6, l - 16));
+    const cx = (b.x0+b.x1)/2, cy = (b.y0+b.y1)/2, r = Math.max(1, Math.max(b.x1-b.x0, b.y1-b.y0)/2);
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0, light);
+    grad.addColorStop(1, dark);
+    ctx.fillStyle = grad;
   } else {
-    s.cuts = s.cuts || {};
-    s.cuts[key] = s.cuts[key] || [];
-    s._c[key] = s._c[key] || new Set();
-    for (const i of idxs) if (!s._c[key].has(i)){ s._c[key].add(i); s.cuts[key].push(i); }
+    ctx.fillStyle = entry.color;
   }
-}
-function fullyErased(s){
-  sets(s);
-  const n = segCount(s), copies = [];
-  for (let k = 0; k < s.sym; k++)
-    for (const f of (s.mir ? [1,-1] : [1])) copies.push(copyKey(k, f));
-  for (const key of copies){
-    if (s.hidden && s.hidden.indexOf(key) >= 0) continue;
-    for (let i = (s.pts.length === 1 ? 0 : 1); i <= (s.pts.length === 1 ? 0 : n); i++)
-      if (!isCut(s, key, i)) return false;
-  }
-  return true;
-}
-function eraseAt(nx, ny){
-  const g = geom();
-  const rad = api.P.esize/g.sc;
-  for (let i = strokes.length-1; i >= 0; i--){
-    const s = strokes[i];
-    for (let k = 0; k < s.sym; k++){
-      for (const f of (s.mir ? [1,-1] : [1])){
-        const key = copyKey(k, f);
-        if (s.hidden && s.hidden.indexOf(key) >= 0) continue;
-        const hits = copySegHits(s, k, f, nx, ny, rad);
-        if (!hits.length) continue;
-        const mode = api.P.emode;
-        if (mode === "vecall"){
-          strokes.splice(i, 1);             // the whole stroke, every copy
-        } else if (mode === "vec"){
-          s.hidden = s.hidden || [];        // this symmetric copy, whole
-          if (s.hidden.indexOf(key) < 0) s.hidden.push(key);
-          if (fullyErased(s)) strokes.splice(i, 1);
-        } else {
-          addCuts(s, key, hits, mode === "all");
-          if (fullyErased(s)) strokes.splice(i, 1);
-        }
-        redraw();
-        api.dirty();
-        return; // topmost piece only, one bite per event
+  ctx.fill(region.path, region.fillRule);
+  if (entry.style === "speckle"){
+    ctx.save();
+    ctx.clip(region.path, region.fillRule);
+    const rnd = mulberry32(hashStr(region.id));
+    const n = 200;
+    for (let i = 0; i < n; i++){
+      const x = b.x0 + rnd()*(b.x1-b.x0), y = b.y0 + rnd()*(b.y1-b.y0);
+      const [r, g, bl] = hexToRgb(shiftLightness(entry.color, (rnd()-0.5)*34));
+      const a = 0.08 + rnd()*0.16;
+      ctx.fillStyle = `rgba(${r},${g},${bl},${a})`;
+      if (rnd() < 0.55){
+        ctx.beginPath(); ctx.arc(x, y, 0.6 + rnd()*1.5, 0, Math.PI*2); ctx.fill();
+      } else {
+        const len = 2 + rnd()*4, ang = rnd()*Math.PI*2;
+        ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+        ctx.fillRect(-len/2, -0.5, len, 1);
+        ctx.restore();
       }
     }
+    ctx.restore();
   }
 }
-// erases a filled area rather than a drawn line: traces the connected
-// painted region under the cursor, then finds the topmost fill whose copy
-// seed lands inside that region - works no matter where in the (possibly
-// large) filled area you click, not just near where the fill was placed.
-function eraseFillAt(nx, ny){
-  const g = geom();
-  const wx = g.cx + nx*g.sc, wy = g.cy + ny*g.sc;
-  const [bx, by] = worldToBacking(wx, wy);
-  const region = floodTraceRegion(bx, by);
-  if (!region) return;
-  for (let i = fills.length - 1; i >= 0; i--){
-    const fl = fills[i];
-    for (let k = 0; k < fl.sym; k++){
-      for (const f of (fl.mir ? [1,-1] : [1])){
-        const key = copyKey(k, f);
-        if (fl.hidden && fl.hidden.indexOf(key) >= 0) continue;
-        const an = Math.PI*2*k/fl.sym + (fl.rot||0), co = Math.cos(an), si = Math.sin(an);
-        const cwx = g.cx + (fl.pt[0]*co - fl.pt[1]*f*si)*g.sc;
-        const cwy = g.cy + (fl.pt[0]*si + fl.pt[1]*f*co)*g.sc;
-        const [cbx, cby] = worldToBacking(cwx, cwy);
-        if (!region.contains(cbx, cby)) continue;
-        if (api.P.emode === "fillvecall"){
-          fills.splice(i, 1); // the whole fill, every mirrored copy
-        } else {
-          fl.hidden = fl.hidden || [];
-          if (fl.hidden.indexOf(key) < 0) fl.hidden.push(key);
-          const total = fl.sym * (fl.mir ? 2 : 1);
-          if (fl.hidden.length >= total) fills.splice(i, 1);
-        }
-        redraw();
-        api.dirty();
-        return; // topmost fill only, one bite per event
-      }
-    }
-  }
+function strokeOutline(ctx, region){
+  ctx.save();
+  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = api.ink();
+  ctx.globalAlpha = 0.82;
+  ctx.stroke(region.path);
+  ctx.restore();
 }
-// picks whatever's under the cursor - a stroke's line first (a narrow hit
-// band around the actual path), falling back to a filled region if the
-// click didn't land on any line - and recolors it to the current brush
-// color. "one" only recolors the specific symmetric copy under the cursor
-// (stored as a per-copy override so the rest of the piece is untouched);
-// "all" recolors the whole stroke/fill, which covers every one of its
-// copies at once since they already share a single .col field.
-// pure hit-test (no mutation) so the same result can both drive the
-// hover highlight drawn every frame AND the actual recolor on click -
-// keeping "what's highlighted" and "what gets recolored" always in sync.
-// Checks strokes first (a narrow band around the actual line), falling
-// back to whatever filled region the cursor sits inside.
-function findRecolorTarget(nx, ny){
-  const g = geom();
-  const rad = api.P.size/g.sc + 2/g.sc;
-  for (let i = strokes.length-1; i >= 0; i--){
-    const s = strokes[i];
-    for (let k = 0; k < s.sym; k++){
-      for (const f of (s.mir ? [1,-1] : [1])){
-        const key = copyKey(k, f);
-        if (s.hidden && s.hidden.indexOf(key) >= 0) continue;
-        if (copySegHits(s, k, f, nx, ny, rad).length) return { type:"stroke", s, k, f, key };
-      }
-    }
-  }
-  const wx = g.cx + nx*g.sc, wy = g.cy + ny*g.sc;
-  const [bx, by] = worldToBacking(wx, wy);
-  const region = floodTraceRegion(bx, by);
-  if (!region) return null;
-  for (let i = fills.length - 1; i >= 0; i--){
-    const fl = fills[i];
-    for (let k = 0; k < fl.sym; k++){
-      for (const f of (fl.mir ? [1,-1] : [1])){
-        const key = copyKey(k, f);
-        if (fl.hidden && fl.hidden.indexOf(key) >= 0) continue;
-        const an = Math.PI*2*k/fl.sym + (fl.rot||0), co = Math.cos(an), si = Math.sin(an);
-        const cwx = g.cx + (fl.pt[0]*co - fl.pt[1]*f*si)*g.sc;
-        const cwy = g.cy + (fl.pt[0]*si + fl.pt[1]*f*co)*g.sc;
-        const [cbx, cby] = worldToBacking(cwx, cwy);
-        if (region.contains(cbx, cby)) return { type:"fill", fl, k, f, key };
-      }
-    }
-  }
+
+/* ---- module state --------------------------------------------------------
+ * `fills` is kept per-template so switching templates never discards other
+ * templates' progress. A dedicated hit-test canvas (never resized or
+ * transformed) keeps isPointInPath() checks decoupled from the world
+ * canvas's own backing-store transform, which can be rebuilt/rescaled as the
+ * tool draws - region paths and hit-testing must never depend on that. */
+const TEMPLATE_IDS = ["mandala", "flowers", "waves", "animal", "cosmic"];
+let api = null;
+let activeTemplate = "mandala";
+let regions = [], regionsTemplate = null;
+let hoverId = null;
+let fills = { mandala:{}, flowers:{}, waves:{}, animal:{}, cosmic:{} };
+const hitCtx = document.createElement("canvas").getContext("2d");
+
+function ensureRegions(force){
+  if (!force && regionsTemplate === activeTemplate) return;
+  regions = buildRegionsFor(activeTemplate);
+  regionsTemplate = activeTemplate;
+  hoverId = null;
+}
+function hitTest(x, y){
+  for (let i = regions.length - 1; i >= 0; i--)
+    if (hitCtx.isPointInPath(regions[i].path, x, y, regions[i].fillRule)) return regions[i];
   return null;
 }
-function applyRecolor(hit){
-  if (!hit) return;
-  const obj = hit.type === "stroke" ? hit.s : hit.fl;
-  if (api.P.rmode === "all"){ obj.col = api.P.col; delete obj.colOverride; }
-  else { obj.colOverride = obj.colOverride || {}; obj.colOverride[hit.key] = api.P.col; }
-  redraw();
-  api.dirty();
-}
-// highlights whatever a click would actually recolor - just the one
-// symmetric copy findRecolorTarget picked out when in "This copy only"
-// mode, or every one of that stroke/fill's copies when in "Whole piece"
-// mode, so the highlight always previews the real outcome instead of
-// silently under-selling how much a click is about to change.
-function drawRecolorHighlight(c, hit){
-  const g = geom();
-  const whole = api.P.rmode === "all";
-  const obj = hit.type === "stroke" ? hit.s : hit.fl;
-  const copies = whole
-    ? Array.from({ length: obj.sym }, (_, k) => k).flatMap(k => obj.mir ? [[k,1],[k,-1]] : [[k,1]])
-    : [[hit.k, hit.f]];
-  c.save();
-  c.strokeStyle = "rgba(255,255,255,.9)";
-  for (const [k, f] of copies){
-    const key = copyKey(k, f);
-    if (obj.hidden && obj.hidden.indexOf(key) >= 0) continue;
-    if (hit.type === "stroke"){
-      const s = obj, an = Math.PI*2*k/s.sym + (s.rot||0), co = Math.cos(an), si = Math.sin(an);
-      const toXY = p => [g.cx + (p[0]*co - p[1]*f*si)*g.sc, g.cy + (p[0]*si + p[1]*f*co)*g.sc];
-      c.lineWidth = Math.max(3, s.size*g.sc + 6);
-      c.lineCap = "round"; c.lineJoin = "round"; c.globalAlpha = .5;
-      c.beginPath();
-      const [x0, y0] = toXY(s.pts[0]);
-      if (s.pts.length === 1) c.arc(x0, y0, c.lineWidth/2, 0, 7);
-      else { c.moveTo(x0, y0); for (let i = 1; i < s.pts.length; i++){ const [x,y] = toXY(s.pts[i]); c.lineTo(x, y); } }
-      c.stroke();
-    } else {
-      const fl = obj, an = Math.PI*2*k/fl.sym + (fl.rot||0), co = Math.cos(an), si = Math.sin(an);
-      const wx = g.cx + (fl.pt[0]*co - fl.pt[1]*f*si)*g.sc, wy = g.cy + (fl.pt[0]*si + fl.pt[1]*f*co)*g.sc;
-      c.lineWidth = 3; c.globalAlpha = .85;
-      c.beginPath(); c.arc(wx, wy, 13, 0, 7); c.stroke();
-    }
-  }
-  c.restore();
-}
-// ---- select-all / delete / rotate ---------------------------------------
-// Selection is a single unit - the whole piece of art, every stroke and
-// fill together - rather than a marquee-drag sub-selection: that removed a
-// per-point rectangle hit-test that ran on every pointer move and was the
-// main source of the lag reported here.
-function forEachCopyPoint(itemSym, itemMir, itemRot, hidden, basePts, cb){
-  const g = geom();
-  for (let k = 0; k < itemSym; k++){
-    for (const f of (itemMir ? [1,-1] : [1])){
-      if (hidden && hidden.indexOf(copyKey(k, f)) >= 0) continue;
-      const an = Math.PI*2*k/itemSym + itemRot, co = Math.cos(an), si = Math.sin(an);
-      for (const p of basePts)
-        cb(g.cx + (p[0]*co - p[1]*f*si)*g.sc, g.cy + (p[0]*si + p[1]*f*co)*g.sc);
-    }
+function repaint(){
+  ensureRegions();
+  api.clearWorld();
+  const tf = fills[activeTemplate] || (fills[activeTemplate] = {});
+  for (const region of regions){
+    const entry = tf[region.id];
+    if (entry) paintFill(api.ctx, region, entry);
+    strokeOutline(api.ctx, region);
   }
 }
-// bbox is cached rather than recomputed every animation frame (it used to be
-// walked fresh each frame just to place the floating buttons, which was the
-// other big chunk of the reported lag) - only recomputed when the selection
-// or its geometry actually changes.
-function recomputeSelBBox(){
-  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
-  const consider = (x, y) => { if (x<minx) minx=x; if (x>maxx) maxx=x; if (y<miny) miny=y; if (y>maxy) maxy=y; };
-  for (const i of selection.strokes){
-    const s = strokes[i]; if (!s) continue;
-    forEachCopyPoint(s.sym, s.mir, s.rot||0, s.hidden, s.pts, consider);
-  }
-  for (const i of selection.fills){
-    const fl = fills[i]; if (!fl) continue;
-    forEachCopyPoint(fl.sym, fl.mir, fl.rot||0, fl.hidden, [fl.pt], consider);
-  }
-  selBBox = maxx < minx ? null : { x0:minx, y0:miny, x1:maxx, y1:maxy };
-}
-function selectAll(){
-  selection = {
-    strokes: new Set(strokes.map((_, i) => i)),
-    fills: new Set(fills.map((_, i) => i)),
-  };
-  recomputeSelBBox();
-}
-function clearSelection(){ selection = { strokes:new Set(), fills:new Set() }; selBBox = null; rotBase = null; }
-function getSelectionBBox(){ return selBBox; }
-function deleteSelection(){
-  if (!selection.strokes.size && !selection.fills.size) return;
-  for (const i of [...selection.strokes].sort((a, b) => b-a)) strokes.splice(i, 1);
-  for (const i of [...selection.fills].sort((a, b) => b-a)) fills.splice(i, 1);
-  clearSelection();
-  redraw();
-  api.dirty();
-}
-// rotation is stored as a per-item angle OFFSET added into the same "an"
-// used to render every mirrored copy, rather than rotating the stored
-// points directly. That distinction matters: "an" is applied as the last
-// step, after the mirror flip, so nudging it spins every copy - both the
-// direct and the mirrored half - the same way. Rotating the points instead
-// (their old approach) fed through the mirror flip and came out reversed
-// for exactly half the copies, which is why only half looked like it moved.
-function rotateSelectionStart(){
-  rotBase = {
-    strokes: [...selection.strokes].map(i => ({ i, rot: strokes[i].rot || 0 })),
-    fills: [...selection.fills].map(i => ({ i, rot: fills[i].rot || 0 })),
-  };
-}
-function rotateSelectionPreview(delta){
-  if (!rotBase) return;
-  curRotDelta = delta;
-  for (const { i, rot } of rotBase.strokes){ const s = strokes[i]; if (s) s.rot = rot + delta; }
-  for (const { i, rot } of rotBase.fills){ const fl = fills[i]; if (fl) fl.rot = rot + delta; }
-  recomputeSelBBox();
-  redraw(true); // skip re-flooding fills while dragging - that's the expensive part, deferred to commit
-}
-function rotateSelectionCommit(){
-  globalRot += curRotDelta; // also the baseline new strokes/fills adopt, and the angle readout's source
-  curRotDelta = 0;
-  rotBase = null;
-  redraw(); // one full redraw, fills included, now that dragging has stopped
-  api.dirty();
-}
+
 window.TOOL = {
-  id:"kaleido", file:"mandala.art",
+  id:"coloringgame", file:"coloringgame.art",
   params:[
-    { k:"tool", t:"icons", l:"", v:"brush", opts:[
-      ["brush", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>', "Brush"],
-      ["eraser", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>', "Eraser"],
-      ["fill", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/></svg>', "Fill"],
-      ["recolor", '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><circle cx="18" cy="18" r="3" fill="currentColor" stroke="none"/></svg>', "Recolor"],
-    ]},
-    { k:"emode", t:"select", l:"Erase", v:"one", tool:"eraser", opts:[
-      ["one","Trim this piece"],["all","Trim all pieces"],["vec","Whole piece"],["vecall","Whole stroke"],
-      ["fillvec","Erase fill (this part)"],["fillvecall","Erase fill (all parts)"],
-    ] },
-    { k:"esize", t:"range",  l:"Eraser",   min:1, max:100, step:1, v:8, u:"px", tool:"eraser" },
-    { k:"rmode", t:"select", l:"Recolor", v:"one", tool:"recolor", opts:[
-      ["one","This copy only"],["all","Whole piece (all copies)"],
-    ] },
-    { k:"fmode", t:"select", l:"Fill", v:"all", tool:"fill", opts:[
-      ["all","All pieces (mirrored)"],["one","This piece only"],
-    ] },
-    { k:"col",  t:"color",  l:"Color",    v:"#5ee6ff" },
-    { k:"mir",  t:"toggle", l:"Mirror",   v:true },
-    { k:"sym",  t:"range",  l:"Symmetry", min:1, max:24, step:1, v:8, tool:"brush" },
-    { k:"size", t:"range",  l:"Brush",    min:1, max:40, step:1, v:6, u:"px", tool:"brush" },
+    { k:"template", t:"select", l:"Template", opts:[
+      ["mandala","Mandala"], ["flowers","Flower Garden"], ["waves","Abstract Waves"],
+      ["animal","Geometric Animal"], ["cosmic","Cosmic Pattern"],
+    ], v:"mandala" },
+    { k:"col", t:"color", l:"Color", v:"#f4c542" },
+    { k:"style", t:"select", l:"Fill", opts:[["solid","Solid"],["gradient","Gradient"],["speckle","Crayon"]], v:"solid" },
   ],
-  init(a){ api = a; },
-  onParam(k){ if (k === "tool") api.syncCursor(); },
+  init(a){
+    api = a;
+    activeTemplate = a.P.template || "mandala";
+    ensureRegions(true);
+    repaint();
+  },
   pointer(type, x, y){
-    cursor = [x, y];
-    const g = geom(), n = [(x-g.cx)/g.sc, (y-g.cy)/g.sc];
-    if (api.P.tool === "eraser"){
-      if (type === "down") this._er = true;
-      if (type === "up"){ this._er = false; return; }
-      if (this._er){
-        if (api.P.emode === "fillvec" || api.P.emode === "fillvecall") eraseFillAt(n[0], n[1]);
-        else eraseAt(n[0], n[1]);
-      }
-      return;
-    }
-    if (api.P.tool === "fill"){
-      if (type === "down"){
-        const cn = toCanonical(n);
-        // "one" reuses the same sym:1/mir:false shape a lone non-mirrored
-        // stroke would use, so applyFills only ever paints this single copy
-        const one = api.P.fmode === "one";
-        growForPoint(cn, one ? 1 : api.P.sym, one ? false : api.P.mir, globalRot);
-        // world raster is already correct (strokes + every prior fill) going
-        // into this click - growForPoint above only grows the backing store
-        // if needed, preserving its existing pixels via drawImage, it never
-        // clears them - so the newly-pushed fill can be painted directly onto
-        // it instead of paying for a full redraw() (rescan every stroke's
-        // points, clear the world, replay every stroke, re-flood every prior
-        // fill). This is what made the fill tool get slower the more had
-        // already been drawn/filled.
-        const nf = { pt:cn, col:api.P.col, sym:one ? 1 : api.P.sym, mir:one ? false : api.P.mir, rot:globalRot };
-        fills.push(nf);
-        applyOneFill(nf);
+    if (type === "down"){
+      ensureRegions();
+      const region = hitTest(x, y);
+      if (region){
+        const tf = fills[activeTemplate] || (fills[activeTemplate] = {});
+        tf[region.id] = { color:api.P.col, style:api.P.style };
+        repaint();
         api.dirty();
       }
-      return;
-    }
-    if (api.P.tool === "recolor"){
-      if (type === "up"){ this._rcDown = false; return; }
-      if (type === "down") this._rcDown = true;
-      recolorHover = findRecolorTarget(n[0], n[1]); // recomputed every move, so the highlight tracks the cursor live
-      if (this._rcDown) applyRecolor(recolorHover);
-      return;
-    }
-    if (type === "down"){
-      const cn = toCanonical(n);
-      live = { pts:[cn], col:api.P.col, size:api.P.size/g.sc, sym:api.P.sym, mir:api.P.mir, rot:globalRot };
-      growForPoint(cn, live.sym, live.mir, globalRot);
-      liveSeg(cn, cn, live);
-    } else if (type === "move" && live){
-      const p = live.pts[live.pts.length-1];
-      const cn = toCanonical(n);
-      if (Math.hypot(cn[0]-p[0], cn[1]-p[1]) < 0.002) return;
-      live.pts.push(cn);
-      growForPoint(cn, live.sym, live.mir, globalRot);
-      liveSeg(p, cn, live);
-    } else if (type === "up" && live){
-      strokes.push(live); live = null; api.dirty();
-      if (window.dailyChallenge) window.dailyChallenge.onStrokeCommitted();
+    } else if (type === "move"){
+      ensureRegions();
+      const region = hitTest(x, y);
+      hoverId = region ? region.id : null;
     }
   },
-  overlay(c){
-    if (api.P.tool === "eraser" && cursor && !api.selectMode){
-      // the ring's border is a fixed width in *screen* pixels (divided by
-      // zoom to cancel out the overlay's own zoom scale) rather than a fixed
-      // width in world units - at a small eraser size a world-unit border
-      // was thick enough relative to the radius to make the whole ring read
-      // as a blob bigger than the size actually set; keeping it constant in
-      // screen space means the border never balloons a small ring and never
-      // thins out to invisible either, like a crisp SVG icon at any size.
-      const z = api.zoom || 1;
-      c.strokeStyle = "rgba(255,110,130,.85)";
-      c.lineWidth = 1.5/z; c.setLineDash([4/z, 4/z]);
-      c.beginPath(); c.arc(cursor[0], cursor[1], api.P.esize, 0, 7); c.stroke();
-      c.setLineDash([]);
-    }
-    if (api.P.tool === "fill" && cursor && !api.selectMode){
-      // a small paint-bucket glyph (same path data as the toolbar icon)
-      // replaces the plain crosshair while Fill is the active tool, so it's
-      // obvious at a glance which tool is armed - the drip is tinted with
-      // the color about to be applied, same live-preview trick as recolor's
-      // dot below. Fixed on-screen size (divided by zoom), same as above.
-      const z = api.zoom || 1;
-      c.save();
-      c.translate(cursor[0], cursor[1]);
-      c.scale(0.8/z, 0.8/z);
-      c.translate(-12, -11);
-      c.lineWidth = 2; c.lineJoin = "round"; c.lineCap = "round";
-      c.fillStyle = "rgba(21,21,33,.92)"; c.strokeStyle = "#fff";
-      c.stroke(new Path2D("m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"));
-      c.fill(new Path2D("m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"));
-      c.stroke(new Path2D("m5 2 5 5"));
-      c.stroke(new Path2D("M2 13h15"));
-      const drip = new Path2D("M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z");
-      c.fillStyle = api.P.col; c.fill(drip);
-      c.lineWidth = 1.2; c.strokeStyle = "rgba(255,255,255,.9)"; c.stroke(drip);
-      c.restore();
-    }
-    if (api.P.tool === "recolor" && cursor && !api.selectMode){
-      // whatever's currently under the cursor gets a visible highlight -
-      // exactly the one symmetric copy a click would recolor - before you
-      // commit to clicking, so hitting the wrong copy is obvious up front
-      // instead of only after the fact.
-      if (recolorHover) drawRecolorHighlight(c, recolorHover);
-      // the cursor itself is a pointer-arrow-plus-dot glyph, matching this
-      // tool's own sidebar icon, filled with the color about to be applied
-      // so it doubles as a live preview of the pick. Drawn at a fixed
-      // on-screen size (divided by zoom) same as the eraser ring above.
-      const z = api.zoom || 1;
-      c.save();
-      c.translate(cursor[0], cursor[1]);
-      c.scale(1/z, 1/z);
-      c.beginPath();
-      c.moveTo(0, 0); c.lineTo(7.07, 16.97); c.lineTo(9.58, 9.58); c.lineTo(16.97, 7.07); c.closePath();
-      c.fillStyle = "rgba(21,21,33,.92)"; c.strokeStyle = "#fff"; c.lineWidth = 1.6;
-      c.fill(); c.stroke();
-      c.beginPath(); c.arc(15, 15, 3, 0, 7);
-      c.fillStyle = api.P.col; c.fill();
-      c.lineWidth = 1.2; c.strokeStyle = "rgba(255,255,255,.9)"; c.stroke();
-      c.restore();
-    }
-    const bbox = getSelectionBBox();
-    if (bbox){
-      const pad = 14;
-      c.save();
-      c.strokeStyle = "rgba(120,170,255,.9)";
-      c.fillStyle = "rgba(120,170,255,.08)";
-      c.lineWidth = 1.4; c.setLineDash([7, 5]);
-      c.beginPath();
-      c.rect(bbox.x0 - pad, bbox.y0 - pad, (bbox.x1-bbox.x0) + pad*2, (bbox.y1-bbox.y0) + pad*2);
-      c.fill(); c.stroke();
-      c.restore();
+  overlay(ctx){
+    if (!hoverId) return;
+    const region = regions.find(r => r.id === hoverId);
+    if (!region) return;
+    ctx.save();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(109,124,255,.9)";
+    ctx.shadowColor = "rgba(109,124,255,.75)";
+    ctx.shadowBlur = 12;
+    ctx.stroke(region.path);
+    ctx.restore();
+  },
+  onParam(k, v){
+    if (k === "template"){
+      activeTemplate = v;
+      ensureRegions(true);
+      repaint();
+      api.dirty();
     }
   },
-  clear(){ strokes = []; fills = []; live = null; globalRot = 0; curRotDelta = 0; recolorHover = null; clearSelection(); api.clearWorld(); },
+  clear(){
+    fills[activeTemplate] = {};
+    repaint();
+  },
   serialize(){
-    // strip runtime Sets; keep pts + cuts (the editable "layers")
-    return { globalRot, strokes: strokes.map(s => ({
-      pts:s.pts, col:s.col, size:s.size, sym:s.sym, mir:s.mir, rot:s.rot||0,
-      hidden:s.hidden, cuts:s.cuts, cutAll:s.cutAll, colOverride:s.colOverride,
-    })), fills: fills.map(f => ({
-      pt:f.pt, col:f.col, sym:f.sym, mir:f.mir, rot:f.rot||0, hidden:f.hidden, colOverride:f.colOverride,
-    })) };
+    return { template:activeTemplate, fills:fills };
   },
-  restore(s){
-    strokes = (s && s.strokes) || [];
-    fills = (s && s.fills) || [];
-    globalRot = (s && s.globalRot) || 0;
-    curRotDelta = 0;
-    live = null; recolorHover = null; clearSelection(); redraw();
+  restore(state){
+    const f = (state && state.fills) || {};
+    fills = {};
+    for (const id of TEMPLATE_IDS) fills[id] = f[id] || {};
+    activeTemplate = (state && state.template) || "mandala";
+    if (api) api.P.template = activeTemplate; // best-effort UI sync (undo path has no other hook)
+    ensureRegions(true);
+    repaint();
   },
-  selectAll, getSelectionBBox, clearSelection, deleteSelection,
-  rotateSelectionStart, rotateSelectionPreview, rotateSelectionCommit,
-  getGlobalRot: () => globalRot,
+  bgChanged(){ repaint(); },
 };
 })();
-
 /* ArtzLoop core runtime - canonical copy lives in shared/tool-core.js.
  * Owns: floating tool panel, camera (pan/zoom over an auto-growing "infinite"
  * world canvas), black/white background, undo/redo history, download/upload
@@ -775,10 +458,11 @@ window.TOOL = {
 (function(){
 const T = window.TOOL;
 const $ = id => document.getElementById(id);
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.3.0";
 const KEY_AUTO = "artzloop." + T.id + ".autosave";
 const KEY_BG = "artzloop.bg", KEY_MUTE = "artzloop.muted", KEY_TRACK = "artzloop.track";
 const KEY_PANEL = "artzloop.panel";
+const KEY_ERASER = "artzloop.eraserSize";
 const BGCOL = { dark:"#0b0b13", light:"#f6f4ef" };
 const BACKING_MAX = 200e6; // max world backing pixels (~800MB RGBA) - well under real browsers' canvas-area limits
 const DIM_MAX = 14000; // max single backing dimension - keeps a very elongated (non-square) drawing under real browsers' per-axis canvas limits even though its area alone is still under BACKING_MAX
@@ -875,14 +559,14 @@ window.addEventListener("keydown", e => {
 
 /* ---- parameter controls --------------------------------------------- */
 const PV = {}, setters = {};
-let onToolSwitch = null; // no-op here - this tool manages its own eraser cursor via overlay(), not screen.style.cursor
+let onToolSwitch = null; // set once the eraser section (below) exists, so switching tools can update the canvas cursor
 // Every param renders inline in the sidebar EXCEPT ones tagged with a
 // `tool:"<key>"` field matching one of the tool-switcher's own option keys -
 // those live in a small popup that opens off that specific tool icon (e.g.
-// Symmetry + Brush size behind the Brush icon, Erase mode + Eraser size
-// behind the Eraser icon), the same pattern a tool would hand-roll itself,
-// just declarative. Untagged controls (Mirror, ...) stay visible in the
-// sidebar by default - there's no generic catch-all settings dump.
+// Width + Axes behind the Draw icon), the same pattern a tool would
+// hand-roll itself, just declarative. Untagged controls (Color, Mirror,
+// Snap, Guide, ...) stay visible in the sidebar by default - there's no
+// generic catch-all settings dump.
 function buildControls(){
   const host = $("controls");
   // every param's value goes live in PV immediately, even ones whose DOM
@@ -900,8 +584,8 @@ function buildControls(){
   }
   if (toolParam) buildToolIcons(host, toolParam, byTool);
   // color comes right after the tool icons, then every remaining untagged
-  // control (Mirror, Rainbow, ...) in its declared order - a fixed reading
-  // order every tool shares: tools, color, on/off extras.
+  // control (Mirror, Snap, Guide, ...) in its declared order - a fixed
+  // reading order every tool shares: tools, color, on/off extras.
   for (const p of T.params) if (p.t === "color") buildOneControl(host, p);
   for (const p of T.params){
     if (p === toolParam || p.t === "color") continue;
@@ -912,8 +596,7 @@ function buildControls(){
 // wires one tool icon's popup: params tagged for that tool build inside a
 // shared floating panel that opens off the icon. Clicking a tool icon both
 // switches the active tool (as always) and opens/updates that popup;
-// clicking the already-open tool's icon again closes it - same toggle
-// behavior a hand-wired per-tool popup would have.
+// clicking the already-open tool's icon again closes it.
 function buildToolIcons(host, p, byTool){
   PV[p.k] = p.v;
   const lab = document.createElement("label"); lab.className = "ctl"; lab.dataset.key = p.k;
@@ -1252,10 +935,6 @@ const api = {
     im.onload = () => { wctx.drawImage(im, 0, 0, W, H); if (cb) cb(); };
     im.src = url;
   },
-  // re-derives the cursor from the now-current tool - called whenever the
-  // "tool" param changes, from the tool-specific onParam() below, since
-  // toolCursor()/panMode/screen all live in this closure, not that one.
-  syncCursor(){ screen.style.cursor = (panMode || spaceHeld) ? "grab" : toolCursor(); },
 };
 
 /* ---- camera / blit ----------------------------------------------------- */
@@ -1263,11 +942,11 @@ function viewSize(){
   const r = screen.getBoundingClientRect();
   return { vw:r.width, vh:r.height };
 }
-// faint grid guide - fixed on-screen spacing that never changes with zoom
-// (only the pan offset shifts it); purely a framing aid, never saved/exported.
+// faint world-space grid under the art - follows pan/zoom, never saved.
+// Two levels: zooming in fades a finer sub-grid into each cell.
 function drawGrid(v){
   if (!gridOn) return;
-  const cell = 44; // matches the shared framing-grid constant used by every other tool
+  const cell = 44;
   sctx.strokeStyle = bgMode === "dark" ? "rgba(255,255,255,.06)" : "rgba(20,20,44,.075)";
   sctx.lineWidth = 1;
   sctx.beginPath();
@@ -1292,6 +971,7 @@ function blit(){
   sctx.drawImage(world,
     v.vw/2 + (wx0 - camX)*zoom, v.vh/2 + (wy0 - camY)*zoom,
     WW*zoom, WH*zoom);
+  drawRasterRotatePreview(v);
   if (T.overlay){
     sctx.save();
     sctx.translate(v.vw/2 - camX*zoom, v.vh/2 - camY*zoom);
@@ -1299,10 +979,11 @@ function blit(){
     T.overlay(sctx);
     sctx.restore();
   }
+  drawEraserCursorRing(v);
 }
 function setZoom(z){
   zoom = Math.min(8, Math.max(0.04, z));
-  $("zoomPct").value = Math.round(zoom * 100) + "%";
+  zoomPctEl.value = Math.round(zoom * 100) + "%";
 }
 // bounding box of everything drawn, in world coords (downsampled alpha scan)
 function contentBBox(){
@@ -1349,6 +1030,8 @@ function fitContent(){
 }
 $("zoomIn").onclick = () => setZoom(zoom * 1.25);
 $("zoomOut").onclick = () => setZoom(zoom / 1.25);
+// zoom % is a plain editable field, not a click-to-reset button: +/- keep
+// their fixed-step behavior, but you can type any exact percentage here.
 const zoomPctEl = $("zoomPct");
 zoomPctEl.addEventListener("focus", () => { zoomPctEl.value = Math.round(zoom*100).toString(); zoomPctEl.select(); });
 zoomPctEl.addEventListener("keydown", e => {
@@ -1363,6 +1046,20 @@ zoomPctEl.addEventListener("blur", () => {
 $("zoomFit").onclick = fitContent;
 screen.addEventListener("wheel", e => {
   e.preventDefault();
+  if (eraserActive()){
+    if (PV.esize != null){
+      const p = T.params.find(pp => pp.k === "esize");
+      let v = PV.esize * (e.deltaY < 0 ? 1.12 : 1/1.12);
+      if (p) v = Math.max(p.min, Math.min(p.max, v));
+      PV.esize = v;
+      if (setters.esize) setters.esize(v);
+      if (T.onParam) T.onParam("esize", v);
+    } else {
+      eraserSize = Math.max(4, Math.min(240, eraserSize * (e.deltaY < 0 ? 1.12 : 1/1.12)));
+      try { localStorage.setItem(KEY_ERASER, eraserSize); } catch (err) {}
+    }
+    return;
+  }
   const r = screen.getBoundingClientRect();
   const mx = e.clientX - r.left - r.width/2, my = e.clientY - r.top - r.height/2;
   const wx = camX + mx/zoom, wy = camY + my/zoom;
@@ -1559,33 +1256,12 @@ window.addEventListener("resize", () => {
 
 /* ---- pointer input: pan vs tool ------------------------------------------ */
 let panMode = false, spaceHeld = false, panning = null;
-// select mode has no drag step - toggling it on/off just selects/deselects
-// the whole piece of art in one shot (dragging a marquee and hit-testing
-// every point of every stroke against it, every frame, was the slow part).
-let selectMode = false, rotating = null;
-const panBtn = $("panBtn"), selectBtn = $("selectBtn");
-// eraser/fill/recolor each draw their own cursor glyph in overlay() - the
-// native crosshair would just double up with it, so hide it (cursor:none)
-// for those tools and only fall back to crosshair for brush, which has no
-// glyph of its own.
-function toolCursor(){
-  const t = api.P.tool;
-  return (t === "eraser" || t === "fill" || t === "recolor") ? "none" : "crosshair";
-}
+const panBtn = $("panBtn");
 panBtn.onclick = () => {
   panMode = !panMode;
   panBtn.classList.toggle("active", panMode);
-  if (panMode && selectMode){ selectMode = false; selectBtn.classList.remove("active"); if (T.clearSelection) T.clearSelection(); }
-  screen.style.cursor = panMode ? "grab" : toolCursor();
-};
-selectBtn.onclick = () => {
-  selectMode = !selectMode;
-  selectBtn.classList.toggle("active", selectMode);
-  if (selectMode){
-    if (panMode){ panMode = false; panBtn.classList.remove("active"); }
-    if (T.selectAll) T.selectAll();
-  } else if (T.clearSelection) T.clearSelection();
-  screen.style.cursor = selectMode ? "crosshair" : ((panMode || spaceHeld) ? "grab" : toolCursor());
+  if (panMode) screen.style.cursor = "grab";
+  else if (onToolSwitch) onToolSwitch();
 };
 window.addEventListener("keydown", e => {
   if (e.code === "Space" && !spaceHeld && e.target === document.body){
@@ -1597,7 +1273,7 @@ window.addEventListener("keydown", e => {
 window.addEventListener("keyup", e => {
   if (e.code === "Space"){
     spaceHeld = false;
-    if (!panMode) screen.style.cursor = toolCursor();
+    if (!panMode){ if (onToolSwitch) onToolSwitch(); else screen.style.cursor = "crosshair"; }
   }
 });
 function toWorldXY(clientX, clientY){
@@ -1606,10 +1282,23 @@ function toWorldXY(clientX, clientY){
           camY + (clientY - r.top - r.height/2)/zoom];
 }
 function ptr(type, e){
-  if (!T.pointer) return;
+  if (selectMode) return;
   const evs = (type === "move" && e.getCoalescedEvents) ? e.getCoalescedEvents() : [e];
   for (const ev of evs){
     const p = toWorldXY(ev.clientX, ev.clientY);
+    if (eraserActive()){
+      eraserCursor = p;
+      if (type === "down") erasing = true;
+      else if (type === "up"){ erasing = false; continue; }
+      if (erasing){
+        ensureVisible(p[0] - eraserSize, p[1] - eraserSize);
+        ensureVisible(p[0] + eraserSize, p[1] + eraserSize);
+        eraseAtWorld(p[0], p[1]);
+        dirtyFlag = true; scheduleSnapshot();
+      }
+      continue;
+    }
+    if (!T.pointer) continue;
     // grow the world under an active drawing gesture
     if (type === "down" || (type === "move" && e.buttons)) ensureVisible(p[0], p[1]);
     T.pointer(type, p[0], p[1], ev);
@@ -1624,7 +1313,6 @@ screen.addEventListener("pointerdown", e => {
     screen.style.cursor = "grabbing";
     return;
   }
-  if (selectMode) return; // nothing to draw while managing the selection
   ptr("down", e);
 });
 screen.addEventListener("pointermove", e => {
@@ -1634,29 +1322,101 @@ screen.addEventListener("pointermove", e => {
     panning = [e.clientX, e.clientY];
     return;
   }
-  if (selectMode) return;
   ptr("move", e);
 });
 function endPtr(e){
   if (panning){
     panning = null;
-    screen.style.cursor = (panMode || spaceHeld) ? "grab" : toolCursor();
+    if (panMode || spaceHeld) screen.style.cursor = "grab";
+    else if (onToolSwitch) onToolSwitch();
+    else screen.style.cursor = "crosshair";
     return;
   }
-  if (selectMode) return;
   ptr("up", e);
 }
 screen.addEventListener("pointerup", endPtr);
 screen.addEventListener("pointercancel", endPtr);
 
-/* ---- floating Delete / Rotate controls for the active selection -------- */
-const selDeleteBtn = $("selDelete"), selRotateBtn = $("selRotate");
+/* ---- select-all + rotate/delete -----------------------------------------
+ * Uses the tool's own precise per-object hooks (T.selectAll/getSelectionBBox/
+ * deleteSelection/rotateSelectionStart/Preview/Commit[/getGlobalRot]) when it
+ * provides them - e.g. a tool with discrete vector strokes can rotate each
+ * object individually. Any tool that doesn't provide those hooks gets a
+ * generic whole-canvas raster fallback instead: "select" grabs everything
+ * currently drawn (via contentBBox), "rotate" spins a snapshot of those
+ * pixels as one rigid image and bakes it back in on release, "delete" clears
+ * the canvas. This makes the bottom-bar Select tool work the same way in
+ * every tool regardless of its internal data model. This tool has no #selectBtn
+ * in its markup, so this whole section stays dormant (every hook below is
+ * gated on the element existing). */
+const selectBtn = $("selectBtn"), selDeleteBtn = $("selDelete"), selRotateBtn = $("selRotate"), rotDeg = $("rotDeg");
+let selectMode = false, rotating = null, curDragDelta = 0, rasterRot = null;
+function hasVectorSelect(){
+  return !!(T.selectAll && T.getSelectionBBox && T.deleteSelection &&
+    T.rotateSelectionStart && T.rotateSelectionPreview && T.rotateSelectionCommit);
+}
+function rasterBBox(){
+  const b = contentBBox();
+  return { x0:b.x, y0:b.y, x1:b.x + b.w, y1:b.y + b.h };
+}
+function currentSelBBox(){
+  if (!selectBtn) return null;
+  if (hasVectorSelect()) return T.getSelectionBBox();
+  return selectMode ? rasterBBox() : null;
+}
+function rasterRotateStart(bbox){
+  const cx = (bbox.x0 + bbox.x1)/2, cy = (bbox.y0 + bbox.y1)/2;
+  const w = Math.max(1, bbox.x1 - bbox.x0), h = Math.max(1, bbox.y1 - bbox.y0);
+  const diag = Math.ceil(Math.hypot(w, h)) + 16; // square big enough to hold any rotation
+  ensureVisible(cx - diag/2, cy - diag/2); ensureVisible(cx + diag/2, cy + diag/2);
+  const snap = document.createElement("canvas");
+  snap.width = diag; snap.height = diag;
+  snap.getContext("2d").drawImage(world,
+    (cx - diag/2 - wx0)*wdpr, (cy - diag/2 - wy0)*wdpr, diag*wdpr, diag*wdpr,
+    0, 0, diag, diag);
+  rasterRot = { snap, diag, cx, cy };
+}
+function rasterRotateCommit(){
+  if (!rasterRot) return;
+  const { snap, diag, cx, cy } = rasterRot;
+  ensureVisible(cx - diag/2, cy - diag/2); ensureVisible(cx + diag/2, cy + diag/2);
+  wctx.clearRect(cx - diag/2, cy - diag/2, diag, diag);
+  wctx.save();
+  wctx.translate(cx, cy);
+  wctx.rotate(curDragDelta);
+  wctx.drawImage(snap, -diag/2, -diag/2, diag, diag);
+  wctx.restore();
+  rasterRot = null;
+  dirtyFlag = true; scheduleSnapshot();
+}
+function drawRasterRotatePreview(v){
+  if (!rasterRot || !rotating) return;
+  const { snap, diag, cx, cy } = rasterRot;
+  const sx = v.vw/2 + (cx - camX)*zoom, sy = v.vh/2 + (cy - camY)*zoom;
+  sctx.fillStyle = BGCOL[bgMode];
+  sctx.fillRect(sx - diag/2*zoom - 2, sy - diag/2*zoom - 2, diag*zoom + 4, diag*zoom + 4);
+  sctx.save();
+  sctx.translate(sx, sy);
+  sctx.rotate(curDragDelta);
+  sctx.drawImage(snap, -diag/2*zoom, -diag/2*zoom, diag*zoom, diag*zoom);
+  sctx.restore();
+}
 function toScreenXY(wx, wy){
   const v = viewSize(), r = screen.getBoundingClientRect();
   return [r.left + v.vw/2 + (wx - camX)*zoom, r.top + v.vh/2 + (wy - camY)*zoom];
 }
+function showRotDeg(){
+  const base = hasVectorSelect() ? ((T.getGlobalRot && T.getGlobalRot()) || 0) : 0;
+  const deg = Math.round((((base + curDragDelta)*180/Math.PI + 180) % 360 + 360) % 360 - 180);
+  rotDeg.textContent = (deg > 0 ? "+" : "") + deg + "°";
+  const r = selRotateBtn.getBoundingClientRect();
+  rotDeg.style.left = (r.left + r.width/2) + "px";
+  rotDeg.style.top = (r.bottom + 8) + "px";
+  rotDeg.classList.add("show");
+}
 function positionSelectUI(){
-  const bbox = T.getSelectionBBox && T.getSelectionBBox();
+  if (!selectBtn) return;
+  const bbox = currentSelBBox();
   if (!bbox){
     selDeleteBtn.classList.remove("show");
     selRotateBtn.classList.remove("show");
@@ -1674,52 +1434,123 @@ function positionSelectUI(){
   selRotateBtn.classList.add("show");
   showRotDeg();
 }
-selDeleteBtn.onclick = () => { if (T.deleteSelection) T.deleteSelection(); };
-// rotation always pivots on the mandala's own center (W/2,H/2 in world
-// coords, same point the tool treats as its origin) - not the selection's own
-// bbox center - so the drag gesture directly mirrors what actually spins.
-// The readout always shows the ART'S ABSOLUTE angle (persisted rotation +
-// any live in-progress drag delta), never a delta that resets to 0 - so
-// reselecting a piece that was rotated earlier (this session or loaded from
-// a save) shows its real angle immediately instead of looking "reset".
-const rotDeg = $("rotDeg");
-let curDragDelta = 0;
-function showRotDeg(){
-  const base = (T.getGlobalRot && T.getGlobalRot()) || 0;
-  const totalRad = base + curDragDelta;
-  const deg = Math.round(((totalRad*180/Math.PI + 180) % 360 + 360) % 360 - 180); // normalized to -180..180
-  rotDeg.textContent = (deg > 0 ? "+" : "") + deg + "°";
-  const r = selRotateBtn.getBoundingClientRect();
-  rotDeg.style.left = (r.left + r.width/2) + "px";
-  rotDeg.style.top = (r.bottom + 8) + "px";
-  rotDeg.classList.add("show");
+if (selectBtn){
+  selectBtn.onclick = () => {
+    selectMode = !selectMode;
+    selectBtn.classList.toggle("active", selectMode);
+    if (selectMode){
+      if (panMode){ panMode = false; panBtn.classList.remove("active"); }
+      if (hasVectorSelect()) T.selectAll();
+    } else if (hasVectorSelect()) T.clearSelection();
+    if (selectMode) screen.style.cursor = "crosshair";
+    else if (onToolSwitch) onToolSwitch();
+  };
+  selDeleteBtn.onclick = () => {
+    if (hasVectorSelect()){ T.deleteSelection(); return; }
+    if (!confirm("Clear the whole canvas?")) return;
+    T.clear();
+    camX = W/2; camY = H/2; setZoom(1);
+    dirtyFlag = true; scheduleSnapshot();
+    selectMode = false; selectBtn.classList.remove("active");
+  };
+  selRotateBtn.addEventListener("pointerdown", e => {
+    e.preventDefault(); e.stopPropagation();
+    selRotateBtn.setPointerCapture(e.pointerId);
+    const p = toWorldXY(e.clientX, e.clientY);
+    const bbox = currentSelBBox();
+    const cx = hasVectorSelect() ? W/2 : (bbox.x0 + bbox.x1)/2;
+    const cy = hasVectorSelect() ? H/2 : (bbox.y0 + bbox.y1)/2;
+    rotating = { cx, cy, start: Math.atan2(p[1] - cy, p[0] - cx) };
+    curDragDelta = 0;
+    if (hasVectorSelect()) T.rotateSelectionStart();
+    else rasterRotateStart(bbox);
+    showRotDeg();
+  });
+  selRotateBtn.addEventListener("pointermove", e => {
+    if (!rotating) return;
+    const p = toWorldXY(e.clientX, e.clientY);
+    curDragDelta = Math.atan2(p[1] - rotating.cy, p[0] - rotating.cx) - rotating.start;
+    if (hasVectorSelect()) T.rotateSelectionPreview(curDragDelta);
+    showRotDeg();
+  });
+  const endRotate = () => {
+    if (!rotating) return;
+    rotating = null;
+    if (hasVectorSelect()) T.rotateSelectionCommit();
+    else rasterRotateCommit();
+    curDragDelta = 0;
+    showRotDeg();
+  };
+  selRotateBtn.addEventListener("pointerup", endRotate);
+  selRotateBtn.addEventListener("pointercancel", endRotate);
 }
-selRotateBtn.addEventListener("pointerdown", e => {
-  e.preventDefault(); e.stopPropagation();
-  selRotateBtn.setPointerCapture(e.pointerId);
-  const p = toWorldXY(e.clientX, e.clientY);
-  rotating = { cx:W/2, cy:H/2, start:Math.atan2(p[1] - H/2, p[0] - W/2) };
-  curDragDelta = 0;
-  if (T.rotateSelectionStart) T.rotateSelectionStart();
-  showRotDeg();
-});
-selRotateBtn.addEventListener("pointermove", e => {
-  if (!rotating) return;
-  const p = toWorldXY(e.clientX, e.clientY);
-  const ang = Math.atan2(p[1] - rotating.cy, p[0] - rotating.cx);
-  curDragDelta = ang - rotating.start;
-  if (T.rotateSelectionPreview) T.rotateSelectionPreview(curDragDelta);
-  showRotDeg();
-});
-function endRotate(){
-  if (!rotating) return;
-  rotating = null;
-  curDragDelta = 0;
-  if (T.rotateSelectionCommit) T.rotateSelectionCommit();
-  showRotDeg(); // stays visible post-drag, now showing the newly committed absolute angle
+
+/* ---- generic raster eraser ----------------------------------------------
+ * Eraser is a sidebar tool icon like any other (not a separate bottom-bar
+ * toggle) - a tool declares an "eraser" option on its own "tool" icons param,
+ * same as it would for "brush". If the tool handles that value itself inside
+ * T.pointer(), it sets T.customEraser = true to opt out; otherwise this
+ * erases pixels straight out of the world canvas whenever that tool is
+ * active, so any tool gets a working eraser with zero extra per-tool code.
+ * The eraser's radius uses the tool's own "esize" param when it declares one
+ * (grouped in the Eraser icon's popup, same as a hand-built one would be);
+ * otherwise it falls back to a shared size, adjustable with the scroll
+ * wheel while the tool is active. This tool has no "eraser" tool option, so
+ * eraserActive() always reports false and this section stays dormant. */
+let erasing = false, eraserCursor = null;
+let eraserSize = +localStorage.getItem(KEY_ERASER) || 28;
+function eraserActive(){ return !T.customEraser && PV.tool === "eraser"; }
+function currentEraserSize(){ return PV.esize != null ? PV.esize : eraserSize; }
+function eraseAtWorld(wx, wy){
+  wctx.save();
+  wctx.globalCompositeOperation = "destination-out";
+  wctx.beginPath(); wctx.arc(wx, wy, currentEraserSize()/2, 0, Math.PI*2); wctx.fill();
+  wctx.restore();
 }
-selRotateBtn.addEventListener("pointerup", endRotate);
-selRotateBtn.addEventListener("pointercancel", endRotate);
+function drawEraserCursorRing(v){
+  if (!eraserActive() || !eraserCursor) return;
+  const sx = v.vw/2 + (eraserCursor[0] - camX)*zoom, sy = v.vh/2 + (eraserCursor[1] - camY)*zoom;
+  sctx.save();
+  sctx.strokeStyle = "rgba(255,110,130,.85)";
+  sctx.lineWidth = 1.5; sctx.setLineDash([4, 4]);
+  sctx.beginPath(); sctx.arc(sx, sy, currentEraserSize()/2*zoom, 0, Math.PI*2); sctx.stroke();
+  sctx.restore();
+}
+onToolSwitch = () => {
+  screen.style.cursor = eraserActive() ? "none" : ((panMode || spaceHeld) ? "grab" : "crosshair");
+};
+window.addEventListener("keydown", e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = (e.target && e.target.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  const k = e.key.toLowerCase();
+  if (k === "s" && selectBtn){ e.preventDefault(); selectBtn.click(); }
+  else if ((e.key === "Delete" || e.key === "Backspace") && selectMode && selDeleteBtn){
+    e.preventDefault(); selDeleteBtn.click();
+  }
+});
+// keyboard shortcuts - Ctrl/Cmd combos work anywhere, bare letters are
+// ignored while typing in a text field (hex input, filename, etc.)
+function typingInField(e){
+  const t = e.target;
+  return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+}
+window.addEventListener("keydown", e => {
+  const ctrl = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+  if (ctrl && k === "s"){ e.preventDefault(); $("quickSaveBtn").click(); return; }
+  if (ctrl && k === "o"){ e.preventDefault(); $("loadBtn").click(); return; }
+  if (ctrl && k === "m"){ e.preventDefault(); applyParams({ mir: !PV.mir }); return; }
+  if (e.altKey && k === "c"){
+    e.preventDefault();
+    const sw = document.querySelector('[data-key="col"] .swatch');
+    if (sw) sw.click();
+    return;
+  }
+  if (ctrl || e.altKey || typingInField(e)) return;
+  if (k === "l"){ applyParams({ tool:"line" }); }
+  else if (k === "c"){ applyParams({ tool:"circle" }); }
+  else if (k === "g"){ applyParams({ guide: !PV.guide }); }
+});
 
 /* ---- black / white canvas ---------------------------------------------- */
 function renderBgBtn(){
@@ -1847,23 +1678,6 @@ $("dlArt").onclick = () => { dlMenu.classList.remove("show"); doDownload(); };
 $("dlPng").onclick = () => { dlMenu.classList.remove("show"); exportImage("png", false); };
 $("dlPngT").onclick = () => { dlMenu.classList.remove("show"); exportImage("png", true); };
 $("dlJpg").onclick = () => { dlMenu.classList.remove("show"); exportImage("jpeg", false); };
-// exports the live strokes as a portable Daily Challenge design - the same
-// {pts,col,size,sym,mir,rot} schema shared/daily-challenge.js expects, with
-// the editable-only fields (hidden/cuts/cutAll/colOverride) dropped since a
-// freshly-authored target design has no erase/recolor history to carry
-$("dlChallenge").onclick = () => {
-  dlMenu.classList.remove("show");
-  const design = {
-    id: "kaleido-" + Date.now(),
-    strokes: T.serialize().strokes.map(s => ({ pts:s.pts, col:s.col, size:s.size, sym:s.sym, mir:s.mir, rot:s.rot || 0 })),
-  };
-  const blob = new Blob([JSON.stringify(design, null, 2)], { type:"application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "challenge-design.json";
-  a.click();
-  URL.revokeObjectURL(a.href);
-};
 $("loadBtn").onclick = () => $("fileInput").click();
 $("fileInput").addEventListener("change", e => {
   if (e.target.files[0]) doUpload(e.target.files[0]);
@@ -1876,18 +1690,12 @@ screen.addEventListener("drop", e => {
 });
 
 /* ---- clear -------------------------------------------------------------- */
-// factored out from the button handler so the Daily Challenge flow (which
-// has its own inline confirm before clearing) can reuse the actual clear
-// logic without popping a second native confirm() on top of it
-function doClearCanvas(){
+$("clearBtn").onclick = () => {
+  if (!confirm("Clear the whole canvas?")) return;
   T.clear();
   camX = W/2; camY = H/2; setZoom(1);
   dirtyFlag = true;
   scheduleSnapshot();
-}
-$("clearBtn").onclick = () => {
-  if (!confirm("Clear the whole canvas?")) return;
-  doClearCanvas();
 };
 
 /* ---- tool-grid popup ------------------------------------------------------ */
@@ -1895,16 +1703,6 @@ const modal = $("modal");
 $("toolsBtn").onclick = () => modal.classList.add("show");
 $("modalX").onclick = () => modal.classList.remove("show");
 modal.addEventListener("click", e => { if (e.target === modal) modal.classList.remove("show"); });
-
-/* ---- daily challenge ------------------------------------------------------ */
-// exposed on window so the tool-specific IIFE above (a separate closure) can
-// notify it from the stroke-commit point in T.pointer()
-window.dailyChallenge = window.DailyChallenge && window.DailyChallenge.mount("kaleido", {
-  pool: window.CHALLENGE_POOL_KALEIDOSCOPE || [],
-  getUserStrokes: () => T.serialize().strokes,
-  clearCanvas: () => doClearCanvas(),
-  buttonEl: $("challengeBtn"),
-});
 
 /* ---- help popup ------------------------------------------------------------ */
 const helpModal = $("helpModal");
@@ -1916,35 +1714,6 @@ window.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   modal.classList.remove("show");
   helpModal.classList.remove("show");
-  if (selectMode) selectBtn.click();
-});
-// keyboard shortcuts - Ctrl/Cmd combos work anywhere, bare letters are
-// ignored while typing in a text field (hex input, filename, etc.)
-function typingInField(e){
-  const t = e.target;
-  return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
-}
-window.addEventListener("keydown", e => {
-  const ctrl = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
-  if (ctrl && k === "s"){ e.preventDefault(); $("quickSaveBtn").click(); return; }
-  if (ctrl && k === "o"){ e.preventDefault(); $("loadBtn").click(); return; }
-  if (ctrl && k === "m"){ e.preventDefault(); applyParams({ mir: !PV.mir }); return; }
-  if (e.altKey && k === "c"){
-    e.preventDefault();
-    const sw = document.querySelector('[data-key="col"] .swatch');
-    if (sw) sw.click();
-    return;
-  }
-  if (ctrl || e.altKey || typingInField(e)) return;
-  if (k === "s"){ e.preventDefault(); selectBtn.click(); }
-  else if (k === "b"){ applyParams({ tool:"brush" }); }
-  else if (k === "e"){ applyParams({ tool:"eraser" }); }
-  else if (k === "f"){ applyParams({ tool:"fill" }); }
-  else if (k === "r"){ applyParams({ tool:"recolor" }); }
-  else if ((k === "delete" || k === "backspace") && T.getSelectionBBox && T.getSelectionBBox()){
-    e.preventDefault();
-    T.deleteSelection();
-  }
 });
 
 /* ---- boot ----------------------------------------------------------------- */
@@ -2007,4 +1776,3 @@ function boot(){
 }
 boot();
 })();
-

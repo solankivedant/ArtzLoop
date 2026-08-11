@@ -31,12 +31,13 @@ function hexToRgb(hex){const n=parseInt(hex.slice(1),16);return[(n>>16)&255,(n>>
  * stroke shears points near its path. Switch to the eraser (generic pixel
  * eraser, same as any other tool) to rub out part of the bath. */
 (function(){
-let api, drops = [], downAt = null, moved = false, lastComb = null;
+let api, drops = [], downAt = null, moved = false, lastComb = null, changed = false;
 const VERTS = 100;
 const PALETTE = ["#26547c","#ef476f","#ffd166","#06d6a0","#7b6cf6","#f78c6b"];
 let palIdx = 0;
 
 function addDrop(x, y){
+  changed = true;
   const r = api.P.diameter/2;
   for (const d of drops){
     const pts = d.pts;
@@ -59,6 +60,7 @@ function addDrop(x, y){
 }
 function comb(x, y){
   if (!lastComb){ lastComb = [x, y]; return; }
+  changed = true;
   const dx = x-lastComb[0], dy = y-lastComb[1];
   const m = Math.hypot(dx, dy);
   if (m < 2) return;
@@ -103,7 +105,13 @@ window.TOOL = {
     }
   },
   frame(){
-    // full re-render: the whole bath deforms every interaction
+    // full re-render: the whole bath deforms every interaction - but only
+    // actually costs anything on frames where a drop/comb changed it, not
+    // every tick forever (this used to redraw all 220 drops x 100 verts
+    // unconditionally at 60fps even while idle, getting slower to respond
+    // the more of the bath was filled in)
+    if (!changed) return;
+    changed = false;
     api.clearWorld();
     const c = api.ctx;
     for (const d of drops){
@@ -114,11 +122,11 @@ window.TOOL = {
       c.closePath(); c.fill();
     }
   },
-  clear(){ drops = []; api.clearWorld(); },
+  clear(){ drops = []; changed = false; api.clearWorld(); },
   serialize(){
     return { drops: drops.map(d => ({ col:d.col, pts:d.pts.map(v => Math.round(v*10)/10) })) };
   },
-  restore(s){ drops = (s && s.drops) || []; },
+  restore(s){ drops = (s && s.drops) || []; changed = true; },
 };
 })();
 

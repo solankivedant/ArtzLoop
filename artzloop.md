@@ -1,4 +1,4 @@
-# 10 generative art / drawing tools
+# 12 generative art / drawing tools
 
 Same family as the kaleidoscope pad above: single-page browser apps, no backend, no login. Each one saves your session to a small downloadable file with its own extension, and you can re-upload that file later to pick up exactly where you left off.
 
@@ -12,6 +12,8 @@ Same family as the kaleidoscope pad above: single-page browser apps, no backend,
 8. **Kaleidoscope photo tiler** - upload any photo, then drag a lens over it; the app tiles and mirrors whatever's under the lens into a live kaleidoscope pattern.
 9. **Snowflake generator** - locked to 6-fold symmetry with a cool blue/white palette and a subtle "freeze" animation when you finish a shape.
 10. **Sacred-geometry overlay pad** - draw circles and lines that snap to a Metatron's-cube-style grid, with symmetry applied across multiple axes at once.
+11. **Block painting** - a relaxing tile/mosaic painter: tap or drag across an adjustable grid (16×16 up to 48×48) to paint tactile, beveled blocks with a 12+ color palette, a 3×3 brush, a fill bucket, an eraser, and optional mirror symmetry (horizontal/vertical/quad).
+12. **Coloring game** - pick from built-in coloring templates (mandala, flower garden, abstract waves, geometric animal, cosmic pattern), tap a closed region to fill it with the selected color, recolor freely with solid/gradient/speckle fill styles.
 
 ## Notes on a couple of details
 
